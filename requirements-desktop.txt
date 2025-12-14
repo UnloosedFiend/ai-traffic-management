@@ -1,0 +1,12 @@
+﻿torch
+torchvision
+torchaudio
+ultralytics
+opencv-python
+matplotlib
+tqdm
+numpy
+pandas
+onnx
+onnxruntime
+tensorflow==2.12.0

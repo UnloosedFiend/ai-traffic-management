@@ -1,0 +1,41 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset='utf-8'>
+  <title>Edge Traffic Demo</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;margin:20px}
+    #stream{border:1px solid #ccc;max-width:100%}
+    .controls{margin-top:10px}
+    .controls button{margin-right:6px;padding:8px 12px}
+    .status{margin-top:10px}
+  </style>
+</head>
+<body>
+  <h1>Edge Traffic — Live Demo (Desktop)</h1>
+  <div>
+    <img id="stream" src="/video_feed" width="800" />
+  </div>
+  <div class="controls">
+    <button onclick="setLight('green')">Green</button>
+    <button onclick="setLight('yellow')">Yellow</button>
+    <button onclick="setLight('red')">Red</button>
+    <button onclick="simulateEmergency()">Emergency (simulate)</button>
+  </div>
+  <div class="status" id="status">Status: idle</div>
+  <script>
+    async function setLight(state){
+      await fetch('/api/set_light', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({state: state})
+      });
+      document.getElementById('status').innerText = 'Status: set to ' + state;
+    }
+    async function simulateEmergency(){
+      await setLight('green');
+      alert('Emergency preemption simulated: lane set to GREEN');
+    }
+  </script>
+</body>
+</html>

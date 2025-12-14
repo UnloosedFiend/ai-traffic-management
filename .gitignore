@@ -1,0 +1,29 @@
+﻿# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*
+.venv/
+venv/
+ENV/
+
+# OS junk
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+
+# Model outputs and heavy training artifacts
+runs/
+models/desktop/runs/
+models/desktop/*.pt
+*.tflite
+*.onnx
+
+# Cache
+.ultralytics/
+datasets/
+cache/
