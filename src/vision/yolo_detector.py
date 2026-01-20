@@ -1,7 +1,8 @@
 from ultralytics import YOLO
 
 # Class IDs for emergency vehicles (as per data.yaml)
-EMERGENCY_CLASSES = {5, 6}  # ambulance, firetruck
+# 0 = vehicle, 1 = ambulance, 2 = police
+EMERGENCY_CLASSES = {1, 2}  # ambulance, police
 
 class YOLODetector:
     def __init__(self, model_path="models/yolov8n.pt", conf=0.4):

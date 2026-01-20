@@ -1,6 +1,10 @@
-﻿train: dataset/images/train
-val:   dataset/images/val
-test:  dataset/images/test
+﻿path: C:/PROJECT/ai-traffic-management/dataset
 
-nc: 7
-names: ['car','bus','truck','motorbike','bicycle','ambulance','firetruck']
+train: images/train
+val: images/val
+
+nc: 3
+names:
+  - ambulance
+  - police
+  - vehicle

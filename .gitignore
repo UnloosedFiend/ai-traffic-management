@@ -1,29 +1,109 @@
-﻿# Python
+﻿# ===========================
+# Python
+# ===========================
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
 .env
 .env.*
 .venv/
 venv/
 ENV/
+env.bak/
+venv.bak/
 
+# ===========================
 # OS junk
+# ===========================
 Thumbs.db
 .DS_Store
+*.swp
+*~
 
+# ===========================
+# IDE / Editor
+# ===========================
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# ===========================
 # Logs
+# ===========================
 *.log
+logs/
 
-# Model outputs and heavy training artifacts
-runs/
-models/desktop/runs/
-models/desktop/*.pt
+# ===========================
+# Training data (large files - not needed in repo)
+# ===========================
+# Dataset images and labels (too large for git)
+dataset/images/train/
+dataset/images/val/
+dataset/images/test/
+dataset/labels/
+
+# Video files (very large)
+videos/
+
+# Extracted frames (large and regenerable)
+frames/
+frames_backup/
+
+# ===========================
+# Training outputs (regenerable)
+# ===========================
+# Ignore all runs except the trained model
+runs/*
+!runs/detect/
+runs/detect/*
+!runs/detect/traffic_v14/
+runs/detect/traffic_v14/*
+!runs/detect/traffic_v14/weights/
+runs/detect/traffic_v14/weights/*
+!runs/detect/traffic_v14/weights/best.pt
+
+# ===========================
+# Exported model formats (regenerable from .pt)
+# ===========================
 *.tflite
 *.onnx
 
+# ===========================
 # Cache
+# ===========================
 .ultralytics/
 datasets/
 cache/
+*.cache
+
+# ===========================
+# Jupyter Notebook
+# ===========================
+.ipynb_checkpoints/
+
+# ===========================
+# KEEP these model files (required to run)
+# ===========================
+# !yolov8n.pt      <- Base pretrained model (root)
+# !yolo11n.pt      <- Base pretrained model (root)
+# !models/*.pt     <- Trained models folder
