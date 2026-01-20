@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Traffic Management Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            min-height: 100vh;
+        }
+        
+        .header {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #00ff88;
+        }
+        
+        .header h1 {
+            font-size: 1.8em;
+            color: #00ff88;
+            text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+        }
+        
+        .header .status-indicator {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+        
+        .status-badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 0.9em;
+        }
+        
+        .status-badge.normal {
+            background: #00ff88;
+            color: #1a1a2e;
+        }
+        
+        .status-badge.emergency {
+            background: #ff4444;
+            color: #fff;
+            animation: pulse 1s infinite;
+        }
+        
+        .status-badge.failsafe {
+            background: #ffaa00;
+            color: #1a1a2e;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.8; transform: scale(1.05); }
+        }
+        
+        .main-container {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 20px;
+            padding: 20px;
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+        
+        .camera-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+        
+        .camera-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+        
+        .camera-card.active {
+            border-color: #00ff88;
+            box-shadow: 0 0 20px rgba(0, 255, 136, 0.3);
+        }
+        
+        .camera-card.emergency-alert {
+            border-color: #ff4444;
+            animation: emergency-pulse 0.5s infinite;
+        }
+        
+        @keyframes emergency-pulse {
+            0%, 100% { box-shadow: 0 0 20px rgba(255, 68, 68, 0.5); }
+            50% { box-shadow: 0 0 40px rgba(255, 68, 68, 0.8); }
+        }
+        
+        .camera-header {
+            padding: 10px 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.3);
+        }
+        
+        .camera-header h3 {
+            font-size: 1.1em;
+        }
+        
+        .signal-lights {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        
+        .signal-light {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border: 2px solid #333;
+            opacity: 0.3;
+            transition: all 0.3s ease;
+        }
+        
+        .signal-light.on {
+            opacity: 1;
+        }
+        
+        .signal-light.red {
+            background: #ff0000;
+        }
+        
+        .signal-light.red.on {
+            box-shadow: 0 0 10px #ff0000;
+        }
+        
+        .signal-light.yellow {
+            background: #ffcc00;
+        }
+        
+        .signal-light.yellow.on {
+            box-shadow: 0 0 10px #ffcc00;
+        }
+        
+        .signal-light.green {
+            background: #00ff00;
+        }
+        
+        .signal-light.green.on {
+            box-shadow: 0 0 15px #00ff00;
+        }
+        
+        .signal-light.blue {
+            background: #0088ff;
+        }
+        
+        .signal-light.blue.on {
+            box-shadow: 0 0 15px #0088ff;
+            animation: blue-pulse 0.8s infinite;
+        }
+        
+        @keyframes blue-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+        
+        .camera-video {
+            width: 100%;
+            height: 280px;
+            object-fit: cover;
+            background: #000;
+        }
+        
+        .camera-stats {
+            padding: 12px 15px;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.2);
+        }
+        
+        .stat-item {
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+        
+        .stat-label {
+            font-size: 0.75em;
+            color: #888;
+            text-transform: uppercase;
+        }
+        
+        .stat-item.vehicles .stat-value { color: #00ff88; }
+        .stat-item.ambulance .stat-value { color: #ff4444; }
+        .stat-item.police .stat-value { color: #4488ff; }
+        
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .panel {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 20px;
+        }
+        
+        .panel h2 {
+            font-size: 1.1em;
+            color: #00ff88;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .current-signal {
+            text-align: center;
+        }
+        
+        .current-lane-display {
+            font-size: 4em;
+            font-weight: bold;
+            color: #00ff88;
+            text-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
+        }
+        
+        .timer-display {
+            font-size: 2em;
+            color: #ffaa00;
+            margin: 10px 0;
+        }
+        
+        .timer-bar {
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 15px;
+        }
+        
+        .timer-progress {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff88, #00aa55);
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+        
+        .lane-queue {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .queue-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            border-left: 4px solid #444;
+        }
+        
+        .queue-item.active {
+            border-left-color: #00ff88;
+            background: rgba(0, 255, 136, 0.1);
+        }
+        
+        .queue-item.emergency {
+            border-left-color: #ff4444;
+            background: rgba(255, 68, 68, 0.1);
+        }
+        
+        .queue-lane {
+            font-weight: bold;
+        }
+        
+        .queue-count {
+            color: #888;
+        }
+        
+        .system-status {
+            display: grid;
+            gap: 10px;
+        }
+        
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .status-label {
+            color: #888;
+        }
+        
+        .status-value {
+            font-weight: bold;
+        }
+        
+        .status-value.online { color: #00ff88; }
+        .status-value.offline { color: #ff4444; }
+        
+        .emergency-banner {
+            display: none;
+            position: fixed;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #ff4444;
+            color: #fff;
+            padding: 15px 40px;
+            border-radius: 8px;
+            font-size: 1.2em;
+            font-weight: bold;
+            z-index: 1000;
+            animation: slide-down 0.3s ease;
+        }
+        
+        .emergency-banner.show {
+            display: block;
+        }
+        
+        @keyframes slide-down {
+            from { transform: translateX(-50%) translateY(-100%); opacity: 0; }
+            to { transform: translateX(-50%) translateY(0); opacity: 1; }
+        }
+        
+        .timestamp {
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        @media (max-width: 1200px) {
+            .main-container {
+                grid-template-columns: 1fr;
+            }
+            
+            .sidebar {
+                flex-direction: row;
+                flex-wrap: wrap;
+            }
+            
+            .panel {
+                flex: 1;
+                min-width: 250px;
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .camera-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="emergency-banner" id="emergencyBanner">
+        🚨 EMERGENCY VEHICLE DETECTED - PRIORITY OVERRIDE ACTIVE 🚨
+    </div>
+    
+    <header class="header">
+        <h1>🚦 AI Traffic Management System</h1>
+        <div class="status-indicator">
+            <span class="timestamp" id="timestamp">--:--:--</span>
+            <span class="status-badge" id="modeBadge">INITIALIZING</span>
+        </div>
+    </header>
+    
+    <main class="main-container">
+        <div class="camera-grid">
+            <!-- Lane 0 -->
+            <div class="camera-card" id="lane0">
+                <div class="camera-header">
+                    <h3>📹 Lane 0 (North)</h3>
+                    <div class="signal-lights" id="signals0">
+                        <div class="signal-light red" id="red0"></div>
+                        <div class="signal-light yellow" id="yellow0"></div>
+                        <div class="signal-light green" id="green0"></div>
+                        <div class="signal-light blue" id="blue0"></div>
+                    </div>
+                </div>
+                <img class="camera-video" src="/video/0" alt="Lane 0 Feed">
+                <div class="camera-stats">
+                    <div class="stat-item vehicles">
+                        <div class="stat-value" id="vehicles0">0</div>
+                        <div class="stat-label">Vehicles</div>
+                    </div>
+                    <div class="stat-item ambulance">
+                        <div class="stat-value" id="ambulance0">0</div>
+                        <div class="stat-label">Ambulance</div>
+                    </div>
+                    <div class="stat-item police">
+                        <div class="stat-value" id="police0">0</div>
+                        <div class="stat-label">Police</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Lane 1 -->
+            <div class="camera-card" id="lane1">
+                <div class="camera-header">
+                    <h3>📹 Lane 1 (East)</h3>
+                    <div class="signal-lights" id="signals1">
+                        <div class="signal-light red" id="red1"></div>
+                        <div class="signal-light yellow" id="yellow1"></div>
+                        <div class="signal-light green" id="green1"></div>
+                        <div class="signal-light blue" id="blue1"></div>
+                    </div>
+                </div>
+                <img class="camera-video" src="/video/1" alt="Lane 1 Feed">
+                <div class="camera-stats">
+                    <div class="stat-item vehicles">
+                        <div class="stat-value" id="vehicles1">0</div>
+                        <div class="stat-label">Vehicles</div>
+                    </div>
+                    <div class="stat-item ambulance">
+                        <div class="stat-value" id="ambulance1">0</div>
+                        <div class="stat-label">Ambulance</div>
+                    </div>
+                    <div class="stat-item police">
+                        <div class="stat-value" id="police1">0</div>
+                        <div class="stat-label">Police</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Lane 2 -->
+            <div class="camera-card" id="lane2">
+                <div class="camera-header">
+                    <h3>📹 Lane 2 (South)</h3>
+                    <div class="signal-lights" id="signals2">
+                        <div class="signal-light red" id="red2"></div>
+                        <div class="signal-light yellow" id="yellow2"></div>
+                        <div class="signal-light green" id="green2"></div>
+                        <div class="signal-light blue" id="blue2"></div>
+                    </div>
+                </div>
+                <img class="camera-video" src="/video/2" alt="Lane 2 Feed">
+                <div class="camera-stats">
+                    <div class="stat-item vehicles">
+                        <div class="stat-value" id="vehicles2">0</div>
+                        <div class="stat-label">Vehicles</div>
+                    </div>
+                    <div class="stat-item ambulance">
+                        <div class="stat-value" id="ambulance2">0</div>
+                        <div class="stat-label">Ambulance</div>
+                    </div>
+                    <div class="stat-item police">
+                        <div class="stat-value" id="police2">0</div>
+                        <div class="stat-label">Police</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Lane 3 -->
+            <div class="camera-card" id="lane3">
+                <div class="camera-header">
+                    <h3>📹 Lane 3 (West)</h3>
+                    <div class="signal-lights" id="signals3">
+                        <div class="signal-light red" id="red3"></div>
+                        <div class="signal-light yellow" id="yellow3"></div>
+                        <div class="signal-light green" id="green3"></div>
+                        <div class="signal-light blue" id="blue3"></div>
+                    </div>
+                </div>
+                <img class="camera-video" src="/video/3" alt="Lane 3 Feed">
+                <div class="camera-stats">
+                    <div class="stat-item vehicles">
+                        <div class="stat-value" id="vehicles3">0</div>
+                        <div class="stat-label">Vehicles</div>
+                    </div>
+                    <div class="stat-item ambulance">
+                        <div class="stat-value" id="ambulance3">0</div>
+                        <div class="stat-label">Ambulance</div>
+                    </div>
+                    <div class="stat-item police">
+                        <div class="stat-value" id="police3">0</div>
+                        <div class="stat-label">Police</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <aside class="sidebar">
+            <div class="panel current-signal">
+                <h2>🚦 Current Signal</h2>
+                <div class="current-lane-display" id="currentLane">-</div>
+                <div style="color: #888;">Lane Active</div>
+                <div class="timer-display">
+                    <span id="remaining">0</span>s
+                </div>
+                <div class="timer-bar">
+                    <div class="timer-progress" id="timerProgress" style="width: 100%"></div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h2>📊 Lane Priority</h2>
+                <div class="lane-queue" id="laneQueue">
+                    <div class="queue-item" id="queueItem0">
+                        <span class="queue-lane">Lane 0</span>
+                        <span class="queue-count" id="queueCount0">0 vehicles</span>
+                    </div>
+                    <div class="queue-item" id="queueItem1">
+                        <span class="queue-lane">Lane 1</span>
+                        <span class="queue-count" id="queueCount1">0 vehicles</span>
+                    </div>
+                    <div class="queue-item" id="queueItem2">
+                        <span class="queue-lane">Lane 2</span>
+                        <span class="queue-count" id="queueCount2">0 vehicles</span>
+                    </div>
+                    <div class="queue-item" id="queueItem3">
+                        <span class="queue-lane">Lane 3</span>
+                        <span class="queue-count" id="queueCount3">0 vehicles</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h2>⚙️ System Status</h2>
+                <div class="system-status">
+                    <div class="status-row">
+                        <span class="status-label">YOLO Model</span>
+                        <span class="status-value" id="modelStatus">traffic_v14</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">Cameras</span>
+                        <span class="status-value" id="cameraStatus">-/4</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">Raspberry Pi</span>
+                        <span class="status-value" id="piStatus">-</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">Control Mode</span>
+                        <span class="status-value" id="controlMode">-</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h2>💡 Signal Legend</h2>
+                <div class="system-status">
+                    <div class="status-row">
+                        <span class="status-label">🔴 Red</span>
+                        <span class="status-value">Stop</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">🟡 Yellow</span>
+                        <span class="status-value">Prepare</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">🟢 Green</span>
+                        <span class="status-value">Go</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="status-label">🔵 Blue</span>
+                        <span class="status-value">Emergency Coming</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </main>
+    
+    <script>
+        // Connect to WebSocket
+        const socket = io();
+        
+        let currentDuration = 0;
+        
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+        
+        socket.on('status_update', (data) => {
+            updateDashboard(data);
+        });
+        
+        function updateDashboard(data) {
+            // Update timestamp
+            document.getElementById('timestamp').textContent = data.timestamp;
+            
+            // Update mode badge
+            const modeBadge = document.getElementById('modeBadge');
+            modeBadge.textContent = data.mode.toUpperCase();
+            modeBadge.className = 'status-badge ' + data.mode;
+            
+            // Update current lane display
+            document.getElementById('currentLane').textContent = data.current_lane;
+            document.getElementById('remaining').textContent = Math.round(data.remaining);
+            
+            // Update timer progress
+            currentDuration = data.duration;
+            const progress = (data.remaining / data.duration) * 100;
+            document.getElementById('timerProgress').style.width = progress + '%';
+            
+            // Update control mode
+            document.getElementById('controlMode').textContent = data.mode.toUpperCase();
+            
+            // Check for any emergency
+            let hasEmergency = false;
+            
+            // Update each lane
+            for (let i = 0; i < 4; i++) {
+                const lane = data.lanes[i];
+                if (!lane) continue;
+                
+                // Update stats
+                document.getElementById('vehicles' + i).textContent = lane.vehicles;
+                document.getElementById('ambulance' + i).textContent = lane.ambulances;
+                document.getElementById('police' + i).textContent = lane.police;
+                
+                // Update signal lights (4 lights: Red, Yellow, Green, Blue)
+                const redLight = document.getElementById('red' + i);
+                const yellowLight = document.getElementById('yellow' + i);
+                const greenLight = document.getElementById('green' + i);
+                const blueLight = document.getElementById('blue' + i);
+                
+                // Reset all lights
+                redLight.classList.remove('on');
+                yellowLight.classList.remove('on');
+                greenLight.classList.remove('on');
+                blueLight.classList.remove('on');
+                
+                if (lane.is_green) {
+                    // This lane has green light
+                    greenLight.classList.add('on');
+                } else {
+                    // This lane is stopped (red)
+                    redLight.classList.add('on');
+                    
+                    // If emergency mode, show blue light on stopped lanes
+                    if (data.mode === 'emergency') {
+                        blueLight.classList.add('on');
+                    }
+                }
+                
+                // Update camera card
+                const card = document.getElementById('lane' + i);
+                card.classList.remove('active', 'emergency-alert');
+                if (lane.is_green) {
+                    card.classList.add('active');
+                }
+                if (lane.emergency) {
+                    card.classList.add('emergency-alert');
+                    hasEmergency = true;
+                }
+                
+                // Update queue
+                const queueItem = document.getElementById('queueItem' + i);
+                const totalVehicles = lane.vehicles + lane.ambulances + lane.police;
+                document.getElementById('queueCount' + i).textContent = totalVehicles + ' vehicles';
+                
+                queueItem.classList.remove('active', 'emergency');
+                if (lane.is_green) {
+                    queueItem.classList.add('active');
+                }
+                if (lane.emergency) {
+                    queueItem.classList.add('emergency');
+                }
+            }
+            
+            // Show/hide emergency banner
+            const banner = document.getElementById('emergencyBanner');
+            if (data.mode === 'emergency' || hasEmergency) {
+                banner.classList.add('show');
+            } else {
+                banner.classList.remove('show');
+            }
+            
+            // Update camera count
+            let healthyCameras = 0;
+            for (let i = 0; i < 4; i++) {
+                if (data.lanes[i] && data.lanes[i].camera_ok) {
+                    healthyCameras++;
+                }
+            }
+            document.getElementById('cameraStatus').textContent = healthyCameras + '/4';
+            document.getElementById('cameraStatus').className = 
+                'status-value ' + (healthyCameras === 4 ? 'online' : (healthyCameras > 0 ? '' : 'offline'));
+        }
+        
+        // Fetch initial status
+        fetch('/api/status')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('piStatus').textContent = data.pi_connected ? 'CONNECTED' : 'OFFLINE';
+                document.getElementById('piStatus').className = 
+                    'status-value ' + (data.pi_connected ? 'online' : 'offline');
+            });
+    </script>
+</body>
+</html>

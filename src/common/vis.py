@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 
-# Class configuration
+# Class configuration (matches data.yaml: 0=ambulance, 1=police, 2=vehicle)
 CLASS_NAMES = {0: "ambulance", 1: "police", 2: "vehicle"}
 CLASS_COLORS = {
     0: (0, 0, 255),     # ambulance - Red (BGR)

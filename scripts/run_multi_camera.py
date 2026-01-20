@@ -37,7 +37,7 @@ CAMERA_SOURCES = [
 ]
 
 # Model path (your trained model)
-MODEL_PATH = "runs/detect/train2/weights/best.pt"
+MODEL_PATH = "runs/detect/traffic_v14/weights/best.pt"
 
 # Detection settings
 CONFIDENCE_THRESHOLD = 0.4

@@ -46,7 +46,7 @@ def parse_args():
     parser.add_argument(
         "--model", 
         type=str, 
-        default="runs/detect/train2/weights/best.pt",
+        default="runs/detect/traffic_v14/weights/best.pt",
         help="Path to trained YOLO model weights"
     )
     parser.add_argument(
