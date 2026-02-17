@@ -22,6 +22,7 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 from ultralytics import YOLO
+from src.comms.pi_client import PiClient
 
 
 # Class names as per your data.yaml (traffic_v14 model)
@@ -40,7 +41,7 @@ def parse_args():
     parser.add_argument(
         "--source", 
         type=str, 
-        default="http://192.168.1.3:8080/video",
+        default=None,
         help="Video source: IP camera URL or webcam index (0, 1, etc.)"
     )
     parser.add_argument(
@@ -72,7 +73,71 @@ def parse_args():
         default="output_detection.mp4",
         help="Output video path (if --save-video is set)"
     )
+    parser.add_argument(
+        "--pi-ip", 
+        type=str, 
+        default=None,
+        help="Raspberry Pi IP address for signal control"
+    )
+    parser.add_argument(
+        "--pi-port", 
+        type=int, 
+        default=5000,
+        help="Raspberry Pi server port"
+    )
     return parser.parse_args()
+
+
+def get_user_input():
+    """Prompt user for IP addresses interactively"""
+    print("\n" + "=" * 60)
+    print("  IP WEBCAM CONFIGURATION")
+    print("=" * 60)
+    
+    print("\nSelect video source:")
+    print("  [1] IP Webcam (Android app)")
+    print("  [2] Local webcam (built-in/USB)")
+    print("  [3] Video file")
+    
+    while True:
+        choice = input("\nEnter choice (1/2/3): ").strip()
+        if choice in ['1', '2', '3']:
+            break
+        print("Invalid choice. Please enter 1, 2, or 3.")
+    
+    if choice == '1':
+        print("\n[INFO] IP Webcam Setup:")
+        print("  1. Install 'IP Webcam' app on your Android phone")
+        print("  2. Open the app and tap 'Start server'")
+        print("  3. Note the IP address shown (e.g., 192.168.1.100)")
+        
+        ip = input("\nEnter IP Webcam IP address (e.g., 192.168.1.100): ").strip()
+        port = input("Enter port (default: 8080): ").strip() or "8080"
+        source = f"http://{ip}:{port}/video"
+    elif choice == '2':
+        cam_index = input("\nEnter webcam index (default: 0): ").strip() or "0"
+        source = cam_index
+    else:
+        source = input("\nEnter video file path: ").strip()
+    
+    # Raspberry Pi configuration
+    print("\n" + "=" * 60)
+    print("  RASPBERRY PI CONFIGURATION")
+    print("=" * 60)
+    
+    print("\nDo you want to connect to Raspberry Pi for traffic signal control?")
+    pi_choice = input("Connect to Raspberry Pi? (y/n, default: n): ").strip().lower()
+    
+    pi_ip = None
+    pi_port = 5000
+    
+    if pi_choice == 'y':
+        pi_ip = input("\nEnter Raspberry Pi IP address (e.g., 192.168.1.50): ").strip()
+        pi_port_input = input("Enter Pi server port (default: 5000): ").strip()
+        if pi_port_input:
+            pi_port = int(pi_port_input)
+    
+    return source, pi_ip, pi_port
 
 
 def draw_detections(frame, results, class_names, class_colors):
@@ -163,6 +228,26 @@ def main():
     print("  AI Traffic Management - Real-time Inference")
     print("=" * 60)
     
+    # Get source and Pi configuration from user input or command line args
+    if args.source is None:
+        source, pi_ip, pi_port = get_user_input()
+    else:
+        source = args.source
+        pi_ip = args.pi_ip
+        pi_port = args.pi_port
+    
+    # Initialize Raspberry Pi client if configured
+    pi_client = None
+    if pi_ip:
+        print(f"\n[INFO] Connecting to Raspberry Pi at {pi_ip}:{pi_port}...")
+        pi_client = PiClient(pi_ip, port=pi_port)
+        if pi_client.check_connection():
+            print("[OK] Raspberry Pi connected successfully!")
+        else:
+            print("[WARN] Raspberry Pi not reachable. Signals will be logged but not sent.")
+    else:
+        print("\n[INFO] Running without Raspberry Pi (no signal control)")
+    
     # Resolve model path
     model_path = Path(project_root) / args.model
     if not model_path.exists():
@@ -176,13 +261,12 @@ def main():
                     print(f"  - {best_pt.relative_to(project_root)}")
         return
     
-    print(f"[INFO] Loading model: {model_path}")
+    print(f"\n[INFO] Loading model: {model_path}")
     model = YOLO(str(model_path))
     print("[OK] Model loaded successfully")
     
     # Parse video source
-    source = args.source
-    if source.isdigit():
+    if isinstance(source, str) and source.isdigit():
         source = int(source)
     
     print(f"[INFO] Connecting to video source: {source}")
@@ -223,6 +307,10 @@ def main():
     frame_count = 0
     start_time = time.time()
     
+    # Emergency signal tracking
+    last_emergency_signal_time = 0
+    EMERGENCY_SIGNAL_COOLDOWN = 5  # seconds between emergency signals
+    
     try:
         while True:
             ret, frame = cap.read()
@@ -240,16 +328,31 @@ def main():
             # Draw detections
             frame, stats = draw_detections(frame, results, CLASS_NAMES, CLASS_COLORS)
             
+            # Send signal to Raspberry Pi on emergency detection
+            current_time = time.time()
+            if pi_client and stats['emergency']:
+                if current_time - last_emergency_signal_time > EMERGENCY_SIGNAL_COOLDOWN:
+                    # Send emergency signal - lane 0, 30 second duration, emergency mode
+                    print("\n[ALERT] Emergency vehicle detected! Sending signal to Pi...")
+                    pi_client.send(lane=0, duration=30, emergency=True)
+                    last_emergency_signal_time = current_time
+            
             # Calculate FPS
             frame_count += 1
-            elapsed_time = time.time() - start_time
+            elapsed_time = current_time - start_time
             if elapsed_time > 1.0:
                 fps = frame_count / elapsed_time
                 frame_count = 0
-                start_time = time.time()
+                start_time = current_time
             
             # Draw stats overlay
             frame = draw_stats(frame, stats, fps)
+            
+            # Draw Pi connection status
+            if pi_client:
+                pi_status = "Pi: Connected" if pi_client.is_healthy() else "Pi: Disconnected"
+                pi_color = (0, 255, 0) if pi_client.is_healthy() else (0, 0, 255)
+                cv2.putText(frame, pi_status, (frame.shape[1] - 180, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, pi_color, 2)
             
             # Save video frame
             if video_writer:

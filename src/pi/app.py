@@ -79,6 +79,41 @@ def set_light():
     gpio.set('lane_red', state=='red')
     return jsonify({'ok':True})
 
+@app.route('/set_signal', methods=['POST'])
+def set_signal():
+    """
+    Set traffic signal for a specific lane.
+    
+    Expected JSON payload:
+        {
+            "lane": "NORTH" | "EAST" | "SOUTH" | "WEST",
+            "emergency": true | false
+        }
+    
+    Returns:
+        JSON response with status
+    """
+    data = request.json or {}
+    lane = data.get('lane', 'NORTH').upper()
+    emergency = data.get('emergency', False)
+    
+    # Map lane names to lane indices
+    lane_map = {'NORTH': 0, 'EAST': 1, 'SOUTH': 2, 'WEST': 3}
+    lane_idx = lane_map.get(lane, 0)
+    
+    # Set the signal state
+    # For now, simple logic: green for the specified lane
+    gpio.set('lane_green', True)
+    gpio.set('lane_yellow', False)
+    gpio.set('lane_red', False)
+    
+    return jsonify({
+        'ok': True,
+        'lane': lane,
+        'lane_idx': lane_idx,
+        'emergency': emergency
+    })
+
 @app.route('/api/detections')
 def get_detections():
     return jsonify(global_detections)

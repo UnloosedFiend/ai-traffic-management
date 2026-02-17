@@ -386,7 +386,13 @@ def generate_frames(lane_id):
 # Flask Routes
 @app.route('/')
 def index():
-    """Main dashboard page"""
+    """Main dashboard page - minimal view"""
+    return render_template('dashboard_minimal.html')
+
+
+@app.route('/full')
+def index_full():
+    """Full dashboard page with camera feeds"""
     return render_template('dashboard.html')
 
 

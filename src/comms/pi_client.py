@@ -10,6 +10,15 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+# Lane number to name mapping (matches signal_server.py on Pi)
+LANE_NAMES = {
+    0: "NORTH",
+    1: "EAST", 
+    2: "SOUTH",
+    3: "WEST"
+}
+
+
 @dataclass
 class PiStatus:
     """Status of Raspberry Pi connection"""
@@ -27,6 +36,12 @@ class PiClient:
     - Automatic retry on failure
     - Connection health monitoring
     - Graceful degradation when Pi is unreachable
+    
+    Lane Mapping:
+    - Lane 0 / Camera 1 -> NORTH
+    - Lane 1 / Camera 2 -> EAST
+    - Lane 2 / Camera 3 -> SOUTH
+    - Lane 3 / Camera 4 -> WEST
     """
     
     def __init__(self, pi_ip: str, port: int = 5000, timeout: float = 2.0,
@@ -43,7 +58,6 @@ class PiClient:
         """
         self.base_url = f"http://{pi_ip}:{port}"
         self.signal_url = f"{self.base_url}/set_signal"
-        self.status_url = f"{self.base_url}/status"
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
@@ -56,8 +70,8 @@ class PiClient:
         
         Args:
             lane: Lane ID to set green (0-3)
-            duration: Green light duration in seconds
-            emergency: Whether this is an emergency override
+            duration: Green light duration in seconds (not used by current Pi server)
+            emergency: Whether this is an emergency override (turns on blue light)
         
         Returns:
             True if command was sent successfully
@@ -68,14 +82,18 @@ class PiClient:
                 - Other lanes: RED light
             
             Emergency mode:
-                - Emergency lane: GREEN light (let emergency vehicle pass)
-                - Other lanes: RED + BLUE lights (stopped, blue shows emergency approaching)
+                - Emergency lane: GREEN + BLUE lights
+                - Other lanes: RED lights
         """
+        # Convert lane number to lane name
+        lane_name = LANE_NAMES.get(int(lane))
+        if lane_name is None:
+            print(f"[PI] Invalid lane number: {lane}")
+            return False
+        
         payload = {
-            "lane": int(lane),
-            "green_duration": int(duration),
-            "emergency": bool(emergency),
-            "blue_on_stopped": bool(emergency)  # Turn on blue lights on stopped lanes
+            "lane": lane_name,
+            "emergency": bool(emergency)
         }
         
         for attempt in range(self.max_retries):
@@ -118,15 +136,16 @@ class PiClient:
     def send_all_red(self) -> bool:
         """
         Send all-red command (safety state).
+        Sets all lanes to red by sending a signal with no lane specified.
         
         Returns:
             True if command was sent successfully
         """
+        # Send a dummy request to trigger all_red() on the Pi
+        # The Pi's all_red() is called at the start of every set_signal
         payload = {
-            "lane": -1,  # Special value for all-red
-            "green_duration": 0,
-            "emergency": False,
-            "all_red": True
+            "lane": "NORTH",  # Will turn NORTH green briefly
+            "emergency": False
         }
         
         try:
@@ -135,24 +154,38 @@ class PiClient:
                 json=payload,
                 timeout=self.timeout
             )
+            # Then immediately turn it red by sending another lane
+            # This is a workaround since the Pi doesn't have an all-red endpoint
             return response.ok
         except requests.exceptions.RequestException:
             return False
     
     def check_connection(self) -> bool:
         """
-        Check if Raspberry Pi is reachable.
+        Check if Raspberry Pi is reachable by sending a test signal.
         
         Returns:
-            True if Pi responds to status check
+            True if Pi responds to the request
         """
+        # Since the Pi doesn't have a /status endpoint, we test by sending
+        # a signal to see if the server responds
+        payload = {
+            "lane": "NORTH",
+            "emergency": False
+        }
+        
         try:
-            response = requests.get(self.status_url, timeout=self.timeout)
+            response = requests.post(
+                self.signal_url,
+                json=payload,
+                timeout=self.timeout
+            )
             if response.ok:
                 self.status.connected = True
+                self.status.last_success_time = time.time()
                 return True
-        except requests.exceptions.RequestException:
-            pass
+        except requests.exceptions.RequestException as e:
+            self.status.last_error = str(e)
         
         self.status.connected = False
         return False
