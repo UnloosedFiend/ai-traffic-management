@@ -77,7 +77,7 @@ class LaneStats:
 
 
 class CameraThread(threading.Thread):
-    """Thread for capturing frames from a single camera"""
+    """Thread for capturing frames using JPEG snapshot mode (zero latency)"""
     
     def __init__(self, config: CameraConfig):
         super().__init__(daemon=True)
@@ -86,14 +86,59 @@ class CameraThread(threading.Thread):
         self.lock = threading.Lock()
         self.running = True
         self.connected = False
+        self.frame_ready = threading.Event()
+        self.last_frame_time = 0
+        
+        # Determine if this is an IP Webcam URL and convert to JPEG mode
+        self.use_jpeg_mode = False
+        self.jpeg_url = None
+        self.stream_url = config.url
+        
+        if "http" in str(config.url).lower():
+            # Convert /video to /shot.jpg for IP Webcam (zero latency)
+            base_url = str(config.url).replace("/video", "").replace("/shot.jpg", "").rstrip("/")
+            self.jpeg_url = f"{base_url}/shot.jpg"
+            self.use_jpeg_mode = True
+            print(f"[CAM {config.lane_id}] Using JPEG snapshot mode: {self.jpeg_url}")
         
     def run(self):
+        if self.use_jpeg_mode:
+            self._run_jpeg_mode()
+        else:
+            self._run_stream_mode()
+    
+    def _run_jpeg_mode(self):
+        """Fetch individual JPEG frames - ZERO buffering/latency"""
+        import urllib.request
+        
+        while self.running:
+            try:
+                # Fetch single JPEG frame directly
+                with urllib.request.urlopen(self.jpeg_url, timeout=2) as response:
+                    img_array = np.asarray(bytearray(response.read()), dtype=np.uint8)
+                    frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                    
+                    if frame is not None:
+                        with self.lock:
+                            self.frame = frame
+                            self.last_frame_time = time.time()
+                        self.connected = True
+                        self.frame_ready.set()
+                    else:
+                        self.connected = False
+                        
+            except Exception as e:
+                self.connected = False
+                time.sleep(0.1)
+    
+    def _run_stream_mode(self):
+        """Fallback to video stream for USB cameras"""
         cap = None
         while self.running:
             try:
                 if cap is None or not cap.isOpened():
-                    print(f"[CAM {self.config.lane_id}] Connecting to {self.config.url}...")
-                    cap = cv2.VideoCapture(self.config.url, cv2.CAP_FFMPEG)
+                    print(f"[CAM {self.config.lane_id}] Connecting to {self.stream_url}...")
+                    cap = cv2.VideoCapture(self.stream_url)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     
                     if cap.isOpened():
@@ -105,15 +150,17 @@ class CameraThread(threading.Thread):
                         continue
                 
                 ret, frame = cap.read()
-                if ret:
+                if ret and frame is not None:
                     with self.lock:
-                        self.frame = frame.copy()
+                        self.frame = frame
+                        self.last_frame_time = time.time()
                     self.connected = True
+                    self.frame_ready.set()
                 else:
                     self.connected = False
                     cap.release()
                     cap = None
-                    time.sleep(1)
+                    time.sleep(0.5)
                     
             except Exception as e:
                 print(f"[CAM {self.config.lane_id}] Error: {e}")
@@ -121,14 +168,23 @@ class CameraThread(threading.Thread):
                 if cap:
                     cap.release()
                 cap = None
-                time.sleep(2)
+                time.sleep(1)
         
         if cap:
             cap.release()
     
     def get_frame(self):
+        """Get the latest frame (returns copy to prevent race conditions)"""
         with self.lock:
-            return self.frame.copy() if self.frame is not None else None
+            if self.frame is not None:
+                return self.frame.copy()
+            return None
+    
+    def get_frame_age(self):
+        """Get age of current frame in seconds"""
+        if self.last_frame_time == 0:
+            return float('inf')
+        return time.time() - self.last_frame_time
     
     def stop(self):
         self.running = False
@@ -452,6 +508,14 @@ def main():
     
     print("\n[INFO] Starting dynamic traffic control...")
     
+    # Frame skip counter for reducing inference load
+    frame_skip_counter = {i: 0 for i in range(4)}
+    INFERENCE_SKIP = 2  # Run inference every N frames (1 = every frame, 2 = every other)
+    MAX_FRAME_AGE = 0.5  # Skip frames older than this (seconds)
+    
+    # Cache last results for skipped frames
+    cached_results = {i: None for i in range(4)}
+    
     try:
         while True:
             processed_frames = {}
@@ -460,13 +524,41 @@ def main():
             # Process each camera and update lane stats
             for lane_id, thread in camera_threads.items():
                 frame = thread.get_frame()
+                frame_age = thread.get_frame_age()
+                
+                # Skip stale frames to reduce latency
+                if frame is not None and frame_age > MAX_FRAME_AGE:
+                    # Frame is too old, use cached stats but still show it
+                    stats = lane_stats[lane_id]
+                    frame = draw_lane_overlay(frame, lane_id, stats, pi_client.is_healthy())
+                    if lane_id == current_green_lane:
+                        cv2.rectangle(frame, (0, 0), (frame.shape[1], 5), (0, 255, 0), -1)
+                    # Add latency warning
+                    cv2.putText(frame, f"LATENCY: {frame_age*1000:.0f}ms", (10, frame.shape[0]-10),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    processed_frames[lane_id] = frame
+                    continue
                 
                 if frame is not None:
-                    # Run inference
-                    results = model(frame, conf=args.conf, imgsz=640, verbose=False)[0]
+                    # Frame skip logic - run inference only every N frames
+                    frame_skip_counter[lane_id] += 1
+                    run_inference = (frame_skip_counter[lane_id] >= INFERENCE_SKIP)
                     
-                    # Draw detections
-                    frame, stats = draw_detections(frame, results, lane_id)
+                    if run_inference:
+                        frame_skip_counter[lane_id] = 0
+                        # Run inference with smaller image size for speed
+                        results = model(frame, conf=args.conf, imgsz=480, verbose=False)[0]
+                        cached_results[lane_id] = results
+                    else:
+                        # Use cached results
+                        results = cached_results[lane_id]
+                    
+                    if results is not None:
+                        # Draw detections
+                        frame, stats = draw_detections(frame, results, lane_id)
+                    else:
+                        # No results yet, use empty stats
+                        stats = LaneStats()
                     
                     # Calculate FPS
                     fps_counters[lane_id]["count"] += 1
