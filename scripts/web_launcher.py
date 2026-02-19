@@ -290,6 +290,9 @@ class TrafficController(threading.Thread):
         self.normal_green_time = 15
         self.signal_update_interval = 1.0
         
+        # Round-robin tracking for equal vehicle counts
+        self.last_round_robin_lane = -1
+        
     def run(self):
         global state, pi_client, camera_threads
         
@@ -319,10 +322,20 @@ class TrafficController(threading.Thread):
         # Find priority lane
         priority_lane, is_emergency = self._get_priority_lane()
         
-        if priority_lane < 0:
-            return
-        
         time_since_green = current_time - state.green_start_time
+        
+        # Handle no vehicles case - all red
+        if priority_lane < 0:
+            if state.current_green_lane >= 0:
+                # Switch to all red
+                state.current_green_lane = -1
+                state.emergency_active = False
+                if pi_client:
+                    try:
+                        pi_client.send_all_red()
+                    except:
+                        pass
+            return
         
         # Check if we need to switch
         should_switch = False
@@ -342,6 +355,10 @@ class TrafficController(threading.Thread):
             state.green_start_time = current_time
             state.emergency_active = is_emergency
             
+            # Update round-robin tracker
+            if not is_emergency:
+                self.last_round_robin_lane = priority_lane
+            
             # Send to Pi
             if pi_client:
                 try:
@@ -350,21 +367,80 @@ class TrafficController(threading.Thread):
                     pass
     
     def _get_priority_lane(self):
-        """Determine which lane should be green"""
-        # Emergency vehicles first
-        for lane_id, stats in state.lane_stats.items():
-            if stats.emergency and stats.connected:
-                return lane_id, True
+        """
+        Determine which lane should be green based on priority:
+        1. Ambulance (highest priority emergency)
+        2. Police (lower priority emergency)
+        3. Most vehicles (normal traffic)
+        4. Round-robin for equal vehicle counts
+        5. All red if no vehicles detected
+        """
+        connected_lanes = [
+            (lane_id, stats) for lane_id, stats in state.lane_stats.items() 
+            if stats.connected
+        ]
         
-        # Most vehicles
-        max_count = -1
-        max_lane = 0
-        for lane_id, stats in state.lane_stats.items():
-            if stats.connected and stats.vehicle_count > max_count:
-                max_count = stats.vehicle_count
-                max_lane = lane_id
+        if not connected_lanes:
+            return -1, False  # No connected cameras
         
-        return max_lane, False
+        # Priority 1: Check for ambulances first (highest emergency priority)
+        ambulance_lanes = [
+            (lane_id, stats.ambulance_count) 
+            for lane_id, stats in connected_lanes 
+            if stats.ambulance_count > 0
+        ]
+        if ambulance_lanes:
+            # Return lane with most ambulances
+            ambulance_lanes.sort(key=lambda x: x[1], reverse=True)
+            return ambulance_lanes[0][0], True
+        
+        # Priority 2: Check for police (lower emergency priority)
+        police_lanes = [
+            (lane_id, stats.police_count) 
+            for lane_id, stats in connected_lanes 
+            if stats.police_count > 0
+        ]
+        if police_lanes:
+            # Return lane with most police vehicles
+            police_lanes.sort(key=lambda x: x[1], reverse=True)
+            return police_lanes[0][0], True
+        
+        # Priority 3: Normal traffic - count vehicles per lane
+        vehicle_counts = [
+            (lane_id, stats.vehicle_count) 
+            for lane_id, stats in connected_lanes
+        ]
+        
+        # Check if ALL lanes have zero vehicles
+        total_vehicles = sum(count for _, count in vehicle_counts)
+        if total_vehicles == 0:
+            return -1, False  # All red - no vehicles
+        
+        # Find maximum vehicle count
+        max_count = max(count for _, count in vehicle_counts)
+        
+        # Get all lanes with maximum count (for round-robin)
+        max_lanes = [lane_id for lane_id, count in vehicle_counts if count == max_count]
+        
+        if len(max_lanes) == 1:
+            # Single lane with most vehicles
+            return max_lanes[0], False
+        else:
+            # Multiple lanes with equal count - use round-robin
+            # Find next lane in sequence after last_round_robin_lane
+            max_lanes.sort()  # Ensure consistent ordering
+            
+            # Find next lane in round-robin sequence
+            next_lane = max_lanes[0]  # Default to first
+            for lane_id in max_lanes:
+                if lane_id > self.last_round_robin_lane:
+                    next_lane = lane_id
+                    break
+            else:
+                # Wrap around to first lane
+                next_lane = max_lanes[0]
+            
+            return next_lane, False
     
     def stop(self):
         self.running = False

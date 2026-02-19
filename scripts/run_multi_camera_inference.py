@@ -428,37 +428,86 @@ def main():
     emergency_active = False  # Is any emergency vehicle present
     emergency_lane = -1  # Which lane has emergency vehicle
     last_signal_sent = None  # Track last signal to avoid redundant sends
+    last_round_robin_lane = -1  # Track round-robin for equal vehicle counts
     
     def get_priority_lane(lane_stats):
         """
-        Determine which lane should get green light based on:
-        1. Emergency vehicles (highest priority)
-        2. Vehicle count (if no emergency)
+        Determine which lane should get green light based on priority:
+        1. Ambulance (highest priority emergency)
+        2. Police (lower priority emergency)
+        3. Most vehicles (normal traffic)
+        4. Round-robin for equal vehicle counts
+        5. All red if no vehicles detected
         
         Returns: (lane_id, is_emergency)
         """
-        # Check for emergency vehicles first
-        emergency_lanes = []
-        for lane_id, stats in lane_stats.items():
-            if stats.emergency:
-                emergency_lanes.append((lane_id, stats.ambulance_count + stats.police_count))
+        nonlocal last_round_robin_lane
         
-        if emergency_lanes:
-            # Return lane with most emergency vehicles (or first if tie)
-            emergency_lanes.sort(key=lambda x: x[1], reverse=True)
-            return emergency_lanes[0][0], True
+        connected_lanes = [
+            (lane_id, stats) for lane_id, stats in lane_stats.items() 
+            if stats.connected
+        ]
         
-        # No emergency - find lane with most vehicles
-        vehicle_counts = [(lane_id, stats.vehicle_count) for lane_id, stats in lane_stats.items() if stats.connected]
-        
-        if not vehicle_counts:
+        if not connected_lanes:
             return -1, False  # No connected cameras
         
-        # Sort by vehicle count (descending), then by lane_id (for consistency)
-        vehicle_counts.sort(key=lambda x: (x[1], -x[0]), reverse=True)
+        # Priority 1: Check for ambulances first (highest emergency priority)
+        ambulance_lanes = [
+            (lane_id, stats.ambulance_count) 
+            for lane_id, stats in connected_lanes 
+            if stats.ambulance_count > 0
+        ]
+        if ambulance_lanes:
+            # Return lane with most ambulances
+            ambulance_lanes.sort(key=lambda x: x[1], reverse=True)
+            return ambulance_lanes[0][0], True
         
-        # If highest count is 0, still give green to first connected lane
-        return vehicle_counts[0][0], False
+        # Priority 2: Check for police (lower emergency priority)
+        police_lanes = [
+            (lane_id, stats.police_count) 
+            for lane_id, stats in connected_lanes 
+            if stats.police_count > 0
+        ]
+        if police_lanes:
+            # Return lane with most police vehicles
+            police_lanes.sort(key=lambda x: x[1], reverse=True)
+            return police_lanes[0][0], True
+        
+        # Priority 3: Normal traffic - count vehicles per lane
+        vehicle_counts = [
+            (lane_id, stats.vehicle_count) 
+            for lane_id, stats in connected_lanes
+        ]
+        
+        # Check if ALL lanes have zero vehicles - all red
+        total_vehicles = sum(count for _, count in vehicle_counts)
+        if total_vehicles == 0:
+            return -1, False  # All red - no vehicles
+        
+        # Find maximum vehicle count
+        max_count = max(count for _, count in vehicle_counts)
+        
+        # Get all lanes with maximum count (for round-robin)
+        max_lanes = [lane_id for lane_id, count in vehicle_counts if count == max_count]
+        
+        if len(max_lanes) == 1:
+            # Single lane with most vehicles
+            return max_lanes[0], False
+        else:
+            # Multiple lanes with equal count - use round-robin
+            max_lanes.sort()  # Ensure consistent ordering
+            
+            # Find next lane in round-robin sequence
+            next_lane = max_lanes[0]  # Default to first
+            for lane_id in max_lanes:
+                if lane_id > last_round_robin_lane:
+                    next_lane = lane_id
+                    break
+            else:
+                # Wrap around to first lane
+                next_lane = max_lanes[0]
+            
+            return next_lane, False
     
     def send_traffic_signal(pi_client, green_lane, is_emergency):
         """Send signal to Raspberry Pi to update traffic lights"""
@@ -589,40 +638,56 @@ def main():
                 # Determine which lane should be green
                 priority_lane, is_emergency = get_priority_lane(lane_stats)
                 
-                # Check if we need to switch signals
-                should_switch = False
                 time_since_green = current_time - green_start_time
                 
-                if is_emergency:
-                    # Emergency always takes priority (immediate switch)
-                    if priority_lane != emergency_lane:
-                        should_switch = True
-                        print(f"\n[EMERGENCY] Vehicle detected on Lane {priority_lane}!")
-                elif emergency_active and not is_emergency:
-                    # Emergency ended - switch back to normal
-                    should_switch = True
-                    print(f"\n[NORMAL] Emergency cleared, returning to normal operation")
-                elif priority_lane != current_green_lane:
-                    # Different lane has priority - check min green time
-                    if time_since_green >= MIN_GREEN_TIME or current_green_lane < 0:
-                        should_switch = True
-                elif time_since_green >= NORMAL_GREEN_TIME:
-                    # Time expired - find next lane with vehicles
-                    should_switch = True
-                
-                if should_switch and priority_lane >= 0:
-                    signal_type = "EMERGENCY" if is_emergency else "NORMAL"
-                    print(f"[SIGNAL] Lane {priority_lane} -> GREEN ({signal_type})")
+                # Handle all-red case (no vehicles detected)
+                if priority_lane < 0:
+                    if current_green_lane >= 0:
+                        print(f"\n[SIGNAL] No vehicles detected - ALL RED")
+                        send_traffic_signal(pi_client, -1, False)
+                        current_green_lane = -1
+                        emergency_active = False
+                        emergency_lane = -1
+                    last_signal_update = current_time
+                    # Continue to display update
+                else:
+                    # Check if we need to switch signals
+                    should_switch = False
                     
-                    if send_traffic_signal(pi_client, priority_lane, is_emergency):
-                        current_green_lane = priority_lane
-                        green_start_time = current_time
-                        emergency_active = is_emergency
-                        emergency_lane = priority_lane if is_emergency else -1
-                    else:
-                        print(f"[WARN] Failed to send signal to Pi")
-                
-                last_signal_update = current_time
+                    if is_emergency:
+                        # Emergency always takes priority (immediate switch)
+                        if priority_lane != emergency_lane:
+                            should_switch = True
+                            emergency_type = "AMBULANCE" if lane_stats[priority_lane].ambulance_count > 0 else "POLICE"
+                            print(f"\n[EMERGENCY] {emergency_type} detected on Lane {priority_lane}!")
+                    elif emergency_active and not is_emergency:
+                        # Emergency ended - switch back to normal
+                        should_switch = True
+                        print(f"\n[NORMAL] Emergency cleared, returning to normal operation")
+                    elif priority_lane != current_green_lane:
+                        # Different lane has priority - check min green time
+                        if time_since_green >= MIN_GREEN_TIME or current_green_lane < 0:
+                            should_switch = True
+                    elif time_since_green >= NORMAL_GREEN_TIME:
+                        # Time expired - find next lane with vehicles
+                        should_switch = True
+                    
+                    if should_switch:
+                        signal_type = "EMERGENCY" if is_emergency else "NORMAL"
+                        print(f"[SIGNAL] Lane {priority_lane} -> GREEN ({signal_type})")
+                        
+                        if send_traffic_signal(pi_client, priority_lane, is_emergency):
+                            current_green_lane = priority_lane
+                            green_start_time = current_time
+                            emergency_active = is_emergency
+                            emergency_lane = priority_lane if is_emergency else -1
+                            # Update round-robin tracker
+                            if not is_emergency:
+                                last_round_robin_lane = priority_lane
+                        else:
+                            print(f"[WARN] Failed to send signal to Pi")
+                    
+                    last_signal_update = current_time
             
             # Send update to web dashboard
             if current_time - last_dashboard_update > DASHBOARD_UPDATE_INTERVAL:
