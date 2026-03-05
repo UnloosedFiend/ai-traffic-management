@@ -18,6 +18,8 @@ class TrafficMode(Enum):
     NORMAL = "normal"           # Detection-based priority
     EMERGENCY = "emergency"     # Emergency vehicle preemption
     FAILSAFE = "failsafe"       # Round-robin fallback
+    MANUAL = "manual"           # Manual override mode
+    FAILURE = "failure"         # System failure mode
 
 
 @dataclass
@@ -57,10 +59,15 @@ class TrafficController:
     # Internal state
     lanes: Dict[int, LaneState] = field(default_factory=dict)
     current_lane: int = 0
+    current_duration: int = 0
     mode: TrafficMode = TrafficMode.NORMAL
     last_emergency_time: float = 0.0
     round_robin_index: int = 0
     cycle_count: int = 0
+    
+    # Manual override
+    manual_setting: str = "NORMAL"
+    forced_lane: int = 0
     
     def __post_init__(self):
         """Initialize lane states"""
@@ -89,15 +96,20 @@ class TrafficController:
         lane.camera_ok = camera_ok
         lane.detection_ok = detection_ok
         
-        # Emergency confirmation logic - require consecutive detections
-        emergency_detected = (ambulance_count > 0 or police_count > 0)
-        
-        if emergency_detected:
+        # Emergency logic:
+        # Ambulance = INSTANT emergency (no confirmation needed)
+        # Police = requires consecutive frame confirmation
+        if ambulance_count > 0:
+            # Ambulance detected → immediate emergency
+            lane.emergency_confirmed = True
+            lane.emergency_confirm_counter = self.emergency_confirm_required
+        elif police_count > 0:
+            # Police detected → require consecutive confirmations
             lane.emergency_confirm_counter += 1
             if lane.emergency_confirm_counter >= self.emergency_confirm_required:
                 lane.emergency_confirmed = True
         else:
-            # Reset counter if no emergency in this frame
+            # No emergency vehicle in this frame → reset
             lane.emergency_confirm_counter = 0
             lane.emergency_confirmed = False
     
@@ -111,16 +123,24 @@ class TrafficController:
         return working_lanes >= 2
     
     def _get_emergency_lane(self) -> Optional[int]:
-        """Get lane with confirmed emergency vehicle, respecting cooldown"""
+        """Get lane with confirmed emergency vehicle.
+        
+        Ambulance lanes bypass cooldown (instant priority).
+        Police lanes still respect cooldown.
+        """
         current_time = time.time()
+        in_cooldown = (current_time - self.last_emergency_time) < self.emergency_cooldown
         
-        # Check cooldown
-        if current_time - self.last_emergency_time < self.emergency_cooldown:
-            return None
-        
+        # Priority 1: Ambulance lanes always bypass cooldown
         for lane_id, lane in self.lanes.items():
-            if lane.emergency_confirmed:
+            if lane.emergency_confirmed and lane.ambulance_count > 0:
                 return lane_id
+        
+        # Priority 2: Police lanes respect cooldown
+        if not in_cooldown:
+            for lane_id, lane in self.lanes.items():
+                if lane.emergency_confirmed and lane.police_count > 0:
+                    return lane_id
         
         return None
     
@@ -179,10 +199,20 @@ class TrafficController:
         """
         self.cycle_count += 1
         
+        # Manual override check
+        if self.manual_setting == "FORCE_LANE":
+            self.mode = TrafficMode.MANUAL
+            self.current_lane = self.forced_lane
+            self.current_duration = self.max_green
+            self.lanes[self.forced_lane].last_green_time = time.time()
+            return self.forced_lane, self.max_green, self.mode
+        
         # Check system health
         if not self._check_system_health():
             self.mode = TrafficMode.FAILSAFE
             lane_id, duration = self._round_robin_next()
+            self.current_lane = lane_id
+            self.current_duration = duration
             return lane_id, duration, self.mode
         
         # Check for emergency
@@ -194,12 +224,16 @@ class TrafficController:
             # Clear emergency confirmation after granting green
             self.lanes[emergency_lane].emergency_confirmed = False
             self.lanes[emergency_lane].emergency_confirm_counter = 0
+            self.current_lane = emergency_lane
+            self.current_duration = self.emergency_green
             return emergency_lane, self.emergency_green, self.mode
         
         # Normal priority-based selection
         self.mode = TrafficMode.NORMAL
         lane_id, duration = self._get_priority_lane()
         self.lanes[lane_id].last_green_time = time.time()
+        self.current_lane = lane_id
+        self.current_duration = duration
         
         return lane_id, duration, self.mode
     
@@ -208,6 +242,7 @@ class TrafficController:
         return {
             "mode": self.mode.value,
             "current_lane": self.current_lane,
+            "current_duration": self.current_duration,
             "cycle_count": self.cycle_count,
             "lanes": {
                 lane_id: {
@@ -222,6 +257,33 @@ class TrafficController:
                 for lane_id, lane in self.lanes.items()
             }
         }
+
+    def get_timing_info(self) -> dict:
+        """Get timing configuration and current state for the web API"""
+        return {
+            "min_green": self.min_green,
+            "max_green": self.max_green,
+            "base_green": self.base_green,
+            "emergency_green": self.emergency_green,
+            "failsafe_cycle": self.failsafe_cycle,
+            "current_lane": self.current_lane,
+            "current_duration": self.current_duration,
+            "mode": self.mode.value,
+            "cycle_count": self.cycle_count,
+        }
+
+    def set_mode(self, mode: TrafficMode):
+        """Set operating mode"""
+        self.mode = mode
+        if mode != TrafficMode.MANUAL:
+            self.manual_setting = "NORMAL"
+
+    def set_manual_setting(self, setting: str, forced_lane: int = 0):
+        """Set manual override setting"""
+        self.manual_setting = setting
+        self.forced_lane = forced_lane
+        if setting == "NORMAL":
+            self.mode = TrafficMode.NORMAL
 
 
 # Legacy function for backward compatibility

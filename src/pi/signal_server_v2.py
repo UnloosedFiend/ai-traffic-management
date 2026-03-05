@@ -4,7 +4,7 @@ Raspberry Pi Traffic Signal Server (Updated)
 This is the updated signal_server.py to run on your Raspberry Pi.
 
 Features:
-- Emergency mode: Green+Blue on emergency lane, Red+Blue on other lanes
+- Emergency mode: Green + blinking Blue on emergency lane, Red only on other lanes
 - Normal mode: Green on priority lane, Red on others
 - Full state control endpoint
 
@@ -19,8 +19,14 @@ Endpoints:
 
 from flask import Flask, request, jsonify
 import RPi.GPIO as GPIO
+import threading
 
 app = Flask(__name__)
+
+# Blue light blink control
+_blink_thread = None
+_blink_active = False
+_blink_lock = threading.Lock()
 
 GPIO.setmode(GPIO.BCM)
 
@@ -67,8 +73,53 @@ def all_red():
         GPIO.output(lane["R"], GPIO.HIGH)
 
 
+def stop_blink():
+    """Stop any active blue light blinking"""
+    global _blink_active, _blink_thread
+    _blink_active = False
+    if _blink_thread and _blink_thread.is_alive():
+        _blink_thread.join(timeout=1.0)
+    _blink_thread = None
+    # Ensure all blue LEDs are off after stopping
+    for lane in LANES.values():
+        GPIO.output(lane["B"], GPIO.LOW)
+
+
+def start_blink(lane_name):
+    """Start blinking blue LED on the specified lane"""
+    global _blink_active, _blink_thread
+    stop_blink()  # Stop any existing blink first
+    
+    if lane_name not in LANES:
+        return
+    
+    _blink_active = True
+    
+    def blink_loop():
+        pin = LANES[lane_name]["B"]
+        while _blink_active:
+            GPIO.output(pin, GPIO.HIGH)
+            # Blink on for 0.3s
+            for _ in range(6):  # 6 × 0.05s = 0.3s
+                if not _blink_active:
+                    GPIO.output(pin, GPIO.LOW)
+                    return
+                import time
+                time.sleep(0.05)
+            GPIO.output(pin, GPIO.LOW)
+            # Blink off for 0.3s
+            for _ in range(6):
+                if not _blink_active:
+                    return
+                import time
+                time.sleep(0.05)
+    
+    _blink_thread = threading.Thread(target=blink_loop, daemon=True)
+    _blink_thread.start()
+
+
 def set_lane_green(lane_name, with_blue=False):
-    """Set a specific lane to green"""
+    """Set a specific lane to green. If with_blue, starts blinking blue."""
     if lane_name not in LANES:
         return False
     
@@ -77,7 +128,7 @@ def set_lane_green(lane_name, with_blue=False):
     GPIO.output(lane["G"], GPIO.HIGH)
     
     if with_blue:
-        GPIO.output(lane["B"], GPIO.HIGH)
+        start_blink(lane_name)
     else:
         GPIO.output(lane["B"], GPIO.LOW)
     
@@ -119,17 +170,15 @@ def set_signal():
     if lane not in LANES:
         return jsonify({"status": "error", "message": f"Invalid lane: {lane}"}), 400
     
+    # Stop any existing blue blink
+    stop_blink()
+    
     # Set all lanes to red first
     all_red()
     
     # Set the requested lane to green
+    # Emergency: GREEN + blinking BLUE on emergency lane, RED only on others
     set_lane_green(lane, with_blue=emergency)
-    
-    # If emergency, turn on blue lights on stopped lanes too
-    if emergency:
-        for other_lane in LANE_ORDER:
-            if other_lane != lane:
-                GPIO.output(LANES[other_lane]["B"], GPIO.HIGH)
     
     # Update state
     current_state["green_lane"] = lane
@@ -153,8 +202,8 @@ def set_state():
     
     Behavior:
     - If emergency=true and emergency_lane is set:
-        - emergency_lane: GREEN + BLUE
-        - other lanes: RED + BLUE
+        - emergency_lane: GREEN + blinking BLUE
+        - other lanes: RED only
     - If emergency=false and green_lane is set:
         - green_lane: GREEN
         - other lanes: RED
@@ -166,16 +215,16 @@ def set_state():
     emergency = data.get("emergency", False)
     emergency_lane = data.get("emergency_lane")
     
+    # Stop any existing blue blink
+    stop_blink()
+    
     # Start with all red
     all_red()
     
     if emergency and emergency_lane and emergency_lane in LANES:
-        # Emergency mode: emergency lane gets green+blue, others get red+blue
+        # Emergency mode: emergency lane gets GREEN + blinking BLUE
+        # Other lanes get RED only (no blue)
         set_lane_green(emergency_lane, with_blue=True)
-        
-        for lane_name in LANE_ORDER:
-            if lane_name != emergency_lane:
-                GPIO.output(LANES[lane_name]["B"], GPIO.HIGH)
         
         current_state["green_lane"] = emergency_lane
         current_state["emergency"] = True
@@ -201,6 +250,7 @@ def set_state():
 @app.route("/all_red", methods=["POST"])
 def endpoint_all_red():
     """Set all lanes to red"""
+    stop_blink()
     all_red()
     current_state["green_lane"] = None
     current_state["emergency"] = False
@@ -242,4 +292,5 @@ if __name__ == "__main__":
     try:
         app.run(host="0.0.0.0", port=5000)
     finally:
+        stop_blink()
         GPIO.cleanup()

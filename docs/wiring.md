@@ -177,34 +177,16 @@ Connect jumper wires from resistors to GPIO pins:
 
 ## Software Configuration
 
-Update `src/pi/gpio_ctrl.py` with the correct pin mapping:
+The authoritative pin mapping is in `src/pi/signal_server_v2.py`:
 
 ```python
-# GPIO BCM pin mapping for 4 lanes × 4 lights
-PIN_MAP = {
-    # Lane 0 (North)
-    'lane0_red': 17,
-    'lane0_yellow': 27,
-    'lane0_green': 22,
-    'lane0_blue': 5,
-    
-    # Lane 1 (East)
-    'lane1_red': 6,
-    'lane1_yellow': 13,
-    'lane1_green': 19,
-    'lane1_blue': 26,
-    
-    # Lane 2 (South)
-    'lane2_red': 12,
-    'lane2_yellow': 16,
-    'lane2_green': 20,
-    'lane2_blue': 21,
-    
-    # Lane 3 (West)
-    'lane3_red': 4,
-    'lane3_yellow': 18,
-    'lane3_green': 23,
-    'lane3_blue': 24,
+# GPIO Pin assignments for each lane (BCM numbering)
+# R=Red, Y=Yellow, G=Green, B=Blue
+LANES = {
+    "NORTH": {"R": 17, "Y": 27, "G": 22, "B": 23},
+    "EAST":  {"R": 5,  "Y": 6,  "G": 13, "B": 19},
+    "SOUTH": {"R": 12, "Y": 16, "G": 20, "B": 21},
+    "WEST":  {"R": 24, "Y": 25, "G": 18, "B": 26}
 }
 ```
 

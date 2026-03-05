@@ -462,16 +462,9 @@ def main():
             ambulance_lanes.sort(key=lambda x: x[1], reverse=True)
             return ambulance_lanes[0][0], True
         
-        # Priority 2: Check for police (lower emergency priority)
-        police_lanes = [
-            (lane_id, stats.police_count) 
-            for lane_id, stats in connected_lanes 
-            if stats.police_count > 0
-        ]
-        if police_lanes:
-            # Return lane with most police vehicles
-            police_lanes.sort(key=lambda x: x[1], reverse=True)
-            return police_lanes[0][0], True
+        # Priority 2: Police - normal priority (not emergency)
+        # Police vehicles are counted but do NOT trigger emergency mode
+        # Only ambulances trigger emergency (instant green + blinking blue)
         
         # Priority 3: Normal traffic - count vehicles per lane
         vehicle_counts = [

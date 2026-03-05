@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Traffic Dashboard</title>
+    <style>
+        /* ================================================================
+           RESET & BASE
+           ================================================================ */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0a0a1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* ================================================================
+           NAVBAR
+           ================================================================ */
+        .navbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 56px;
+            background: rgba(10, 10, 30, 0.97);
+            border-bottom: 2px solid rgba(0, 200, 255, 0.2);
+            display: flex;
+            align-items: center;
+            padding: 0 24px;
+            z-index: 1000;
+            backdrop-filter: blur(12px);
+        }
+
+        .nav-brand {
+            font-size: 1.1em;
+            font-weight: 700;
+            color: #00d4ff;
+            margin-right: 36px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+        }
+        .nav-brand span { font-size: 1.3em; }
+
+        .nav-tabs {
+            display: flex;
+            gap: 4px;
+        }
+
+        .nav-tab {
+            padding: 10px 22px;
+            font-size: 0.88em;
+            font-weight: 600;
+            color: #7a8ba8;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            letter-spacing: 0.3px;
+        }
+        .nav-tab:hover {
+            color: #c0d0e0;
+            background: rgba(255,255,255,0.05);
+        }
+        .nav-tab.active {
+            color: #fff;
+            background: rgba(0, 200, 255, 0.15);
+            box-shadow: inset 0 -2px 0 #00d4ff;
+        }
+
+        .nav-right {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .nav-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.78em;
+            color: #7a8ba8;
+        }
+        .nav-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #ff4444;
+        }
+        .nav-dot.ok { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+
+        .nav-stop-btn {
+            padding: 6px 16px;
+            font-size: 0.78em;
+            font-weight: 600;
+            color: #ff5566;
+            background: rgba(255, 85, 100, 0.1);
+            border: 1px solid rgba(255, 85, 100, 0.3);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .nav-stop-btn:hover {
+            background: rgba(255, 85, 100, 0.2);
+        }
+
+        /* ================================================================
+           MAIN CONTENT
+           ================================================================ */
+        .main-content {
+            padding-top: 72px;
+            padding-bottom: 24px;
+        }
+
+        .page { display: none; padding: 0 24px; }
+        .page.active { display: block; }
+
+        /* ================================================================
+           CAMERA FEED PAGE
+           ================================================================ */
+        .camera-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .camera-card {
+            background: rgba(15, 15, 35, 0.9);
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.06);
+            overflow: hidden;
+            position: relative;
+        }
+
+        .camera-header {
+            padding: 10px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0,0,0,0.4);
+        }
+
+        .camera-lane-name {
+            font-weight: 700;
+            font-size: 0.9em;
+            letter-spacing: 0.5px;
+        }
+        .cam-north .camera-lane-name { color: #00d4ff; }
+        .cam-east  .camera-lane-name { color: #ff66ff; }
+        .cam-south .camera-lane-name { color: #ffcc00; }
+        .cam-west  .camera-lane-name { color: #ff8844; }
+
+        .camera-badge {
+            font-size: 0.7em;
+            padding: 3px 10px;
+            border-radius: 10px;
+            font-weight: 600;
+        }
+        .badge-green {
+            background: rgba(0, 255, 100, 0.15);
+            color: #00ff88;
+            border: 1px solid rgba(0, 255, 100, 0.3);
+        }
+        .badge-red {
+            background: rgba(255, 50, 50, 0.15);
+            color: #ff5555;
+            border: 1px solid rgba(255, 50, 50, 0.3);
+        }
+        .badge-emergency {
+            background: rgba(255, 50, 50, 0.3);
+            color: #ff3333;
+            border: 1px solid rgba(255, 50, 50, 0.6);
+            animation: emergPulse 0.8s ease-in-out infinite alternate;
+        }
+        @keyframes emergPulse {
+            from { opacity: 0.7; }
+            to   { opacity: 1; }
+        }
+
+        .camera-feed {
+            width: 100%;
+            aspect-ratio: 16/10;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .camera-feed img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .camera-feed .no-signal {
+            color: #445566;
+            font-size: 0.9em;
+        }
+
+        .camera-stats {
+            padding: 10px 16px;
+            display: flex;
+            gap: 18px;
+            font-size: 0.78em;
+            color: #8899aa;
+            background: rgba(0,0,0,0.2);
+        }
+        .camera-stats strong { color: #c0d0e0; }
+
+        /* ================================================================
+           SIGNAL LIGHTS PAGE
+           ================================================================ */
+
+        /* --- LED Marquee Screen --- */
+        .led-screen-container {
+            max-width: 1200px;
+            margin: 0 auto 28px;
+        }
+
+        .led-screen {
+            background: #0d0d0d;
+            border: 3px solid #222;
+            border-radius: 12px;
+            padding: 18px 28px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: inset 0 0 30px rgba(0,0,0,0.8), 0 4px 20px rgba(0,0,0,0.5);
+        }
+        .led-screen::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(0,0,0,0.15) 2px,
+                rgba(0,0,0,0.15) 4px
+            );
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .led-screen-label {
+            font-size: 0.65em;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: #444;
+            margin-bottom: 6px;
+        }
+
+        .led-text {
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 1.5em;
+            font-weight: 700;
+            color: #00ff44;
+            text-shadow: 0 0 10px #00ff44, 0 0 30px rgba(0, 255, 68, 0.3);
+            min-height: 46px;
+            display: flex;
+            align-items: center;
+            position: relative;
+            z-index: 2;
+            overflow: hidden;
+            white-space: nowrap;
+        }
+        .led-text.emergency {
+            color: #ff2222;
+            text-shadow: 0 0 10px #ff2222, 0 0 30px rgba(255, 34, 34, 0.4);
+            animation: ledFlash 1s ease-in-out infinite alternate;
+        }
+        @keyframes ledFlash {
+            from { opacity: 0.7; }
+            to   { opacity: 1; }
+        }
+
+        .led-text .scroll-text {
+            display: inline-block;
+            animation: scrollLed 12s linear infinite;
+        }
+        @keyframes scrollLed {
+            0%   { transform: translateX(100%); }
+            100% { transform: translateX(-100%); }
+        }
+
+        /* --- Signal Grid --- */
+        .signal-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .signal-card {
+            background: rgba(15, 15, 35, 0.95);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.06);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+        .signal-card.is-green {
+            border-color: rgba(0, 255, 100, 0.25);
+            box-shadow: 0 0 30px rgba(0, 255, 100, 0.06);
+        }
+        .signal-card.is-emergency {
+            border-color: rgba(255, 50, 50, 0.4);
+            box-shadow: 0 0 30px rgba(255, 50, 50, 0.1);
+        }
+
+        .signal-lane-label {
+            font-size: 0.82em;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            margin-bottom: 16px;
+        }
+
+        /* --- Traffic Light --- */
+        .traffic-light {
+            width: 72px;
+            background: #1a1a1a;
+            border-radius: 36px;
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            border: 2px solid #333;
+            box-shadow: inset 0 2px 8px rgba(0,0,0,0.6), 0 4px 12px rgba(0,0,0,0.4);
+            margin-bottom: 16px;
+        }
+
+        .light-bulb {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: #1e1e1e;
+            border: 2px solid #2a2a2a;
+            transition: all 0.3s;
+        }
+
+        .light-bulb.red    { background: #331111; border-color: #441111; }
+        .light-bulb.yellow { background: #332211; border-color: #443311; }
+        .light-bulb.green  { background: #113311; border-color: #114411; }
+        .light-bulb.blue   { background: #111133; border-color: #111144; }
+
+        .light-bulb.red.on {
+            background: #ff2222;
+            border-color: #ff4444;
+            box-shadow: 0 0 16px #ff2222, 0 0 40px rgba(255,34,34,0.3);
+        }
+        .light-bulb.yellow.on {
+            background: #ffcc00;
+            border-color: #ffdd33;
+            box-shadow: 0 0 16px #ffcc00, 0 0 40px rgba(255,204,0,0.3);
+        }
+        .light-bulb.green.on {
+            background: #00dd44;
+            border-color: #00ff55;
+            box-shadow: 0 0 16px #00dd44, 0 0 40px rgba(0,221,68,0.3);
+        }
+        .light-bulb.blue.on {
+            background: #2266ff;
+            border-color: #4488ff;
+            box-shadow: 0 0 16px #2266ff, 0 0 40px rgba(34,102,255,0.3);
+        }
+        .light-bulb.blue.blink {
+            animation: blueBlink 0.6s ease-in-out infinite alternate;
+        }
+        @keyframes blueBlink {
+            0%   { background: #111133; border-color: #111144; box-shadow: none; }
+            100% { background: #2266ff; border-color: #4488ff; box-shadow: 0 0 16px #2266ff, 0 0 40px rgba(34,102,255,0.3); }
+        }
+
+        /* --- Timer --- */
+        .signal-timer {
+            font-size: 2.2em;
+            font-weight: 700;
+            font-family: 'Consolas', 'Courier New', monospace;
+            margin-bottom: 6px;
+            letter-spacing: 2px;
+        }
+        .signal-timer.green-timer { color: #00ff88; text-shadow: 0 0 10px rgba(0,255,136,0.3); }
+        .signal-timer.red-timer   { color: #ff4444; text-shadow: 0 0 10px rgba(255,68,68,0.3); }
+
+        .signal-timer-label {
+            font-size: 0.68em;
+            color: #556677;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 18px;
+        }
+
+        /* --- Vehicle count bar --- */
+        .vehicle-count-box {
+            width: 100%;
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            padding: 10px 14px;
+        }
+        .vc-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.78em;
+            padding: 4px 0;
+        }
+        .vc-row + .vc-row { border-top: 1px solid rgba(255,255,255,0.04); }
+        .vc-label { color: #7788aa; }
+        .vc-value { font-weight: 700; font-family: 'Consolas', monospace; }
+        .vc-value.vehicles  { color: #00dd88; }
+        .vc-value.ambulance { color: #ff4444; }
+        .vc-value.police    { color: #4488ff; }
+
+        /* ================================================================
+           RESPONSIVE
+           ================================================================ */
+        @media (max-width: 900px) {
+            .camera-grid { grid-template-columns: 1fr; }
+            .signal-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        @media (max-width: 600px) {
+            .signal-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
+            .nav-brand span { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ===== NAVBAR ===== -->
+<nav class="navbar">
+    <div class="nav-brand">
+        <span>&#x1F6A6;</span> AI Traffic
+    </div>
+    <div class="nav-tabs">
+        <button class="nav-tab active" onclick="switchPage('cameras')" id="tabCameras">
+            &#x1F4F7; Camera Feed
+        </button>
+        <button class="nav-tab" onclick="switchPage('signals')" id="tabSignals">
+            &#x1F6A5; Signal Lights
+        </button>
+    </div>
+    <div class="nav-right">
+        <div class="nav-status">
+            <div class="nav-dot" id="piDot"></div>
+            <span id="piLabel">Pi: Disconnected</span>
+        </div>
+        <button class="nav-stop-btn" onclick="stopSystem()">&#x25A0; Stop</button>
+    </div>
+</nav>
+
+<!-- ===== MAIN ===== -->
+<div class="main-content">
+
+    <!-- ===== CAMERA FEED PAGE ===== -->
+    <div class="page active" id="pageCameras">
+        <div class="camera-grid">
+            <!-- Lane 0 - NORTH -->
+            <div class="camera-card cam-north" id="camCard0">
+                <div class="camera-header">
+                    <div class="camera-lane-name">NORTH &mdash; Lane 1</div>
+                    <div class="camera-badge badge-red" id="camBadge0">RED</div>
+                </div>
+                <div class="camera-feed">
+                    <img id="camFeed0" style="display:none;">
+                    <div class="no-signal" id="camNoSig0">Waiting for feed...</div>
+                </div>
+                <div class="camera-stats">
+                    <span>Vehicles: <strong id="camVeh0">0</strong></span>
+                    <span>Ambulance: <strong id="camAmb0">0</strong></span>
+                    <span>Police: <strong id="camPol0">0</strong></span>
+                </div>
+            </div>
+
+            <!-- Lane 1 - EAST -->
+            <div class="camera-card cam-east" id="camCard1">
+                <div class="camera-header">
+                    <div class="camera-lane-name">EAST &mdash; Lane 2</div>
+                    <div class="camera-badge badge-red" id="camBadge1">RED</div>
+                </div>
+                <div class="camera-feed">
+                    <img id="camFeed1" style="display:none;">
+                    <div class="no-signal" id="camNoSig1">Waiting for feed...</div>
+                </div>
+                <div class="camera-stats">
+                    <span>Vehicles: <strong id="camVeh1">0</strong></span>
+                    <span>Ambulance: <strong id="camAmb1">0</strong></span>
+                    <span>Police: <strong id="camPol1">0</strong></span>
+                </div>
+            </div>
+
+            <!-- Lane 2 - SOUTH -->
+            <div class="camera-card cam-south" id="camCard2">
+                <div class="camera-header">
+                    <div class="camera-lane-name">SOUTH &mdash; Lane 3</div>
+                    <div class="camera-badge badge-red" id="camBadge2">RED</div>
+                </div>
+                <div class="camera-feed">
+                    <img id="camFeed2" style="display:none;">
+                    <div class="no-signal" id="camNoSig2">Waiting for feed...</div>
+                </div>
+                <div class="camera-stats">
+                    <span>Vehicles: <strong id="camVeh2">0</strong></span>
+                    <span>Ambulance: <strong id="camAmb2">0</strong></span>
+                    <span>Police: <strong id="camPol2">0</strong></span>
+                </div>
+            </div>
+
+            <!-- Lane 3 - WEST -->
+            <div class="camera-card cam-west" id="camCard3">
+                <div class="camera-header">
+                    <div class="camera-lane-name">WEST &mdash; Lane 4</div>
+                    <div class="camera-badge badge-red" id="camBadge3">RED</div>
+                </div>
+                <div class="camera-feed">
+                    <img id="camFeed3" style="display:none;">
+                    <div class="no-signal" id="camNoSig3">Waiting for feed...</div>
+                </div>
+                <div class="camera-stats">
+                    <span>Vehicles: <strong id="camVeh3">0</strong></span>
+                    <span>Ambulance: <strong id="camAmb3">0</strong></span>
+                    <span>Police: <strong id="camPol3">0</strong></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== SIGNAL LIGHTS PAGE ===== -->
+    <div class="page" id="pageSignals">
+
+        <!-- LED Marquee Screen -->
+        <div class="led-screen-container">
+            <div class="led-screen">
+                <div class="led-screen-label">&#x25CF; Traffic Information Display</div>
+                <div class="led-text" id="ledText">
+                    System Running &mdash; All Lanes Normal
+                </div>
+            </div>
+        </div>
+
+        <!-- 4 Signal Cards -->
+        <div class="signal-grid">
+            <!-- NORTH -->
+            <div class="signal-card" id="sigCard0">
+                <div class="signal-lane-label" style="color:#00d4ff;">&#x2B06; NORTH</div>
+                <div class="traffic-light">
+                    <div class="light-bulb red on" id="sigR0"></div>
+                    <div class="light-bulb yellow" id="sigY0"></div>
+                    <div class="light-bulb green" id="sigG0"></div>
+                    <div class="light-bulb blue" id="sigB0"></div>
+                </div>
+                <div class="signal-timer red-timer" id="sigTimer0">--</div>
+                <div class="signal-timer-label" id="sigTimerLabel0">Waiting</div>
+                <div class="vehicle-count-box">
+                    <div class="vc-row">
+                        <span class="vc-label">Vehicles</span>
+                        <span class="vc-value vehicles" id="sigVeh0">0</span>
+                    </div>
+                    <div class="vc-row">
+                        <span class="vc-label">Ambulance</span>
+                        <span class="vc-value ambulance" id="sigAmb0">0</span>
+                    </div>
+                    <div class="vc-row">
+                        <span class="vc-label">Police</span>
+                        <span class="vc-value police" id="sigPol0">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- EAST -->
+            <div class="signal-card" id="sigCard1">
+                <div class="signal-lane-label" style="color:#ff66ff;">&#x27A1; EAST</div>
+                <div class="traffic-light">
+                    <div class="light-bulb red on" id="sigR1"></div>
+                    <div class="light-bulb yellow" id="sigY1"></div>
+                    <div class="light-bulb green" id="sigG1"></div>
+                    <div class="light-bulb blue" id="sigB1"></div>
+                </div>
+                <div class="signal-timer red-timer" id="sigTimer1">--</div>
+                <div class="signal-timer-label" id="sigTimerLabel1">Waiting</div>
+                <div class="vehicle-count-box">
+                    <div class="vc-row">
+                        <span class="vc-label">Vehicles</span>
+                        <span class="vc-value vehicles" id="sigVeh1">0</span>
+                    </div>
+                    <div class="vc-row">
+                        <span class="vc-label">Ambulance</span>
+                        <span class="vc-value ambulance" id="sigAmb1">0</span>
+                    </div>
+                    <div class="vc-row">
+                        <span class="vc-label">Police</span>
+                        <span class="vc-value police" id="sigPol1">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SOUTH -->
+            <div class="signal-card" id="sigCard2">
+                <div class="signal-lane-label" style="color:#ffcc00;">&#x2B07; SOUTH</div>
+                <div class="traffic-light">
+                    <div class="light-bulb red on" id="sigR2"></div>
+                    <div class="light-bulb yellow" id="sigY2"></div>
+                    <div class="light-bulb green" id="sigG2"></div>
+                    <div class="light-bulb blue" id="sigB2"></div>
+                </div>
+                <div class="signal-timer red-timer" id="sigTimer2">--</div>
+                <div class="signal-timer-label" id="sigTimerLabel2">Waiting</div>
+                <div class="vehicle-count-box">
+                    <div class="vc-row">
+                        <span class="vc-label">Vehicles</span>
+                        <span class="vc-value vehicles" id="sigVeh2">0</span>
+                    </div>
+                    <div class="vc-row">
+                        <span class="vc-label">Ambulance</span>
+                        <span class="vc-value ambulance" id="sigAmb2">0</span>
+                    </div>
+                    <div class="vc-row">
+                        <span class="vc-label">Police</span>
+                        <span class="vc-value police" id="sigPol2">0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- WEST -->
+            <div class="signal-card" id="sigCard3">
+                <div class="signal-lane-label" style="color:#ff8844;">&#x2B05; WEST</div>
+                <div class="traffic-light">
+                    <div class="light-bulb red on" id="sigR3"></div>
+                    <div class="light-bulb yellow" id="sigY3"></div>
+                    <div class="light-bulb green" id="sigG3"></div>
+                    <div class="light-bulb blue" id="sigB3"></div>
+                </div>
+                <div class="signal-timer red-timer" id="sigTimer3">--</div>
+                <div class="signal-timer-label" id="sigTimerLabel3">Waiting</div>
+                <div class="vehicle-count-box">
+                    <div class="vc-row">
+                        <span class="vc-label">Vehicles</span>
+                        <span class="vc-value vehicles" id="sigVeh3">0</span>
+                    </div>
+                    <div class="vc-row">
+                        <span class="vc-label">Ambulance</span>
+                        <span class="vc-value ambulance" id="sigAmb3">0</span>
+                    </div>
+                    <div class="vc-row">
+                        <span class="vc-label">Police</span>
+                        <span class="vc-value police" id="sigPol3">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div><!-- /main-content -->
+
+
+<script>
+// ====================================================================
+// PAGE SWITCHING
+// ====================================================================
+const LANE_NAMES = ['NORTH', 'EAST', 'SOUTH', 'WEST'];
+let currentPage = 'cameras';
+
+function switchPage(page) {
+    currentPage = page;
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+
+    if (page === 'cameras') {
+        document.getElementById('pageCameras').classList.add('active');
+        document.getElementById('tabCameras').classList.add('active');
+    } else {
+        document.getElementById('pageSignals').classList.add('active');
+        document.getElementById('tabSignals').classList.add('active');
+    }
+}
+
+// ====================================================================
+// STATUS POLLING
+// ====================================================================
+let pollTimer = null;
+let cameraFeedsStarted = false;
+
+function startPolling() {
+    // Start MJPEG camera feeds
+    if (!cameraFeedsStarted) {
+        for (let i = 0; i < 4; i++) {
+            const img = document.getElementById('camFeed' + i);
+            img.src = '/video/' + i;
+            img.onload = function() {
+                img.style.display = 'block';
+                document.getElementById('camNoSig' + i).style.display = 'none';
+            };
+            img.onerror = function() {
+                img.style.display = 'none';
+                document.getElementById('camNoSig' + i).style.display = 'block';
+            };
+        }
+        cameraFeedsStarted = true;
+    }
+
+    // Poll status every 500ms
+    pollTimer = setInterval(fetchStatus, 500);
+    fetchStatus();
+}
+
+async function fetchStatus() {
+    try {
+        const resp = await fetch('/api/status');
+        const data = await resp.json();
+        updateUI(data);
+    } catch (e) {
+        console.error('Status fetch error:', e);
+    }
+}
+
+// ====================================================================
+// UI UPDATE
+// ====================================================================
+function updateUI(data) {
+    const greenLane = data.current_green_lane;
+    const emergency = data.emergency_active;
+    const blinking = data.blue_light_blinking;
+    const remaining = data.remaining_time || 0;
+    const piOk = data.pi_connected;
+
+    // Navbar Pi status
+    const dot = document.getElementById('piDot');
+    const label = document.getElementById('piLabel');
+    dot.className = piOk ? 'nav-dot ok' : 'nav-dot';
+    label.textContent = piOk ? 'Pi: Connected' : 'Pi: Disconnected';
+
+    // Emergency info for LED screen
+    let emergencyLane = -1;
+
+    // Update each lane
+    for (let i = 0; i < 4; i++) {
+        const lane = data.lanes ? data.lanes[String(i)] : null;
+        const veh = lane ? (lane.vehicles || 0) : 0;
+        const amb = lane ? (lane.ambulance || 0) : 0;
+        const pol = lane ? (lane.police || 0) : 0;
+        const isGreen = (i === greenLane);
+        const laneEmergency = (lane && lane.emergency) || (emergency && isGreen);
+
+        if (amb > 0) emergencyLane = i;
+
+        // ---- Camera page ----
+        document.getElementById('camVeh' + i).textContent = veh;
+        document.getElementById('camAmb' + i).textContent = amb;
+        document.getElementById('camPol' + i).textContent = pol;
+
+        const badge = document.getElementById('camBadge' + i);
+        if (laneEmergency && isGreen) {
+            badge.className = 'camera-badge badge-emergency';
+            badge.textContent = 'EMERGENCY';
+        } else if (isGreen) {
+            badge.className = 'camera-badge badge-green';
+            badge.textContent = 'GREEN';
+        } else {
+            badge.className = 'camera-badge badge-red';
+            badge.textContent = 'RED';
+        }
+
+        // ---- Signal page ----
+        document.getElementById('sigVeh' + i).textContent = veh;
+        document.getElementById('sigAmb' + i).textContent = amb;
+        document.getElementById('sigPol' + i).textContent = pol;
+
+        // Traffic light bulbs
+        const r = document.getElementById('sigR' + i);
+        const y = document.getElementById('sigY' + i);
+        const g = document.getElementById('sigG' + i);
+        const b = document.getElementById('sigB' + i);
+
+        // Reset
+        r.className = 'light-bulb red';
+        y.className = 'light-bulb yellow';
+        g.className = 'light-bulb green';
+        b.className = 'light-bulb blue';
+
+        if (isGreen) {
+            g.classList.add('on');
+            if (emergency && isGreen) {
+                // Emergency lane: green + blinking blue
+                b.classList.add('blink');
+            }
+        } else {
+            r.classList.add('on');
+            // No blue on other lanes during emergency
+        }
+
+        // Signal card class
+        const card = document.getElementById('sigCard' + i);
+        card.className = 'signal-card';
+        if (isGreen && emergency) card.classList.add('is-emergency');
+        else if (isGreen) card.classList.add('is-green');
+
+        // Timer
+        const timer = document.getElementById('sigTimer' + i);
+        const timerLabel = document.getElementById('sigTimerLabel' + i);
+        if (isGreen) {
+            timer.textContent = remaining + 's';
+            timer.className = 'signal-timer green-timer';
+            timerLabel.textContent = emergency ? 'Emergency Green' : 'Green Time';
+        } else if (greenLane >= 0) {
+            timer.textContent = '--';
+            timer.className = 'signal-timer red-timer';
+            timerLabel.textContent = 'Waiting';
+        } else {
+            timer.textContent = '--';
+            timer.className = 'signal-timer red-timer';
+            timerLabel.textContent = 'All Red';
+        }
+    }
+
+    // LED Screen message
+    const ledText = document.getElementById('ledText');
+    if (emergency && greenLane >= 0) {
+        ledText.className = 'led-text emergency';
+        ledText.innerHTML = '<span class="scroll-text">&#x1F6A8; EMERGENCY: Ambulance detected on ' +
+            LANE_NAMES[greenLane] + ' lane! All other lanes STOP immediately! &#x1F6A8;</span>';
+    } else if (greenLane >= 0) {
+        ledText.className = 'led-text';
+        ledText.textContent = '\u25CF  ' + LANE_NAMES[greenLane] + ' lane is GREEN  \u2014  ' +
+            remaining + 's remaining  \u2014  System Running Normally';
+    } else {
+        ledText.className = 'led-text';
+        ledText.textContent = '\u25CF  All lanes RED  \u2014  No vehicles detected  \u2014  System Idle';
+    }
+}
+
+// ====================================================================
+// STOP SYSTEM
+// ====================================================================
+async function stopSystem() {
+    if (!confirm('Stop the traffic system?')) return;
+    try {
+        await fetch('/api/stop', { method: 'POST' });
+        clearInterval(pollTimer);
+        window.location.href = '/';
+    } catch (e) {
+        alert('Error stopping system: ' + e.message);
+    }
+}
+
+// ====================================================================
+// INIT
+// ====================================================================
+startPolling();
+</script>
+</body>
+</html>

@@ -107,11 +107,11 @@ FAILSAFE_CYCLE_TIME = 15
 #   - RED: Stop
 #   - YELLOW: Prepare to stop/go
 #   - GREEN: Go
-#   - BLUE: Emergency vehicle approaching (shown on RED lanes)
+#   - BLUE: Emergency indicator (blinking on emergency lane only)
 #
-# When emergency mode is active:
-#   - Emergency lane: GREEN (let emergency vehicle pass)
-#   - Other lanes: RED + BLUE (stopped, showing why)
+# When emergency mode is active (ambulance detected):
+#   - Emergency lane: GREEN + BLINKING BLUE (let ambulance pass)
+#   - Other lanes: RED only
 
 # ============================
 # EMERGENCY VEHICLE CONFIRMATION

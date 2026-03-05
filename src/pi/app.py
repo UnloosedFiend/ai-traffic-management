@@ -1,16 +1,43 @@
 ﻿# src/pi/app.py
 from flask import Flask, Response, render_template, request, jsonify
 import cv2, threading, time, os
+
+try:
+    import RPi.GPIO as GPIO
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+except ImportError:
+    GPIO = None
+
 from detect_tflite import TFLiteDetector
-from gpio_ctrl import GPIOController
 
 MODEL_PATH = os.getenv('MODEL_PATH','src/pi/model/best.tflite')
 CAM_ID = int(os.getenv('CAM_ID','0'))
 INPUT_SIZE = int(os.getenv('INPUT_SIZE','320'))
 
 detector = TFLiteDetector(MODEL_PATH, input_size=INPUT_SIZE)
-PIN_MAP = {'lane_red':17, 'lane_yellow':27, 'lane_green':22}
-gpio = GPIOController(PIN_MAP)
+
+# Pin mapping from signal_server_v2.py (authoritative source)
+LANES = {
+    "NORTH": {"R": 17, "Y": 27, "G": 22, "B": 23},
+    "EAST":  {"R": 5,  "Y": 6,  "G": 13, "B": 19},
+    "SOUTH": {"R": 12, "Y": 16, "G": 20, "B": 21},
+    "WEST":  {"R": 24, "Y": 25, "G": 18, "B": 26},
+}
+LANE_ORDER = ["NORTH", "EAST", "SOUTH", "WEST"]
+
+# Initialize GPIO pins
+if GPIO:
+    for lane in LANES.values():
+        for pin in lane.values():
+            GPIO.setup(pin, GPIO.OUT)
+            GPIO.output(pin, GPIO.LOW)
+
+
+def gpio_set(pin, value):
+    """Set a GPIO pin HIGH or LOW."""
+    if GPIO:
+        GPIO.output(pin, GPIO.HIGH if value else GPIO.LOW)
 
 app = Flask(__name__)
 video_lock = threading.Lock()
@@ -73,11 +100,16 @@ def video_feed():
 @app.route('/api/set_light', methods=['POST'])
 def set_light():
     data = request.json or {}
-    state = data.get('state','red')
-    gpio.set('lane_green', state=='green')
-    gpio.set('lane_yellow', state=='yellow')
-    gpio.set('lane_red', state=='red')
-    return jsonify({'ok':True})
+    state = data.get('state', 'red')
+    lane_name = data.get('lane', 'NORTH').upper()
+    if lane_name not in LANES:
+        return jsonify({'ok': False, 'error': f'Invalid lane: {lane_name}'}), 400
+    lane = LANES[lane_name]
+    gpio_set(lane['G'], state == 'green')
+    gpio_set(lane['Y'], state == 'yellow')
+    gpio_set(lane['R'], state == 'red')
+    gpio_set(lane['B'], False)
+    return jsonify({'ok': True})
 
 @app.route('/set_signal', methods=['POST'])
 def set_signal():
@@ -97,20 +129,30 @@ def set_signal():
     lane = data.get('lane', 'NORTH').upper()
     emergency = data.get('emergency', False)
     
-    # Map lane names to lane indices
-    lane_map = {'NORTH': 0, 'EAST': 1, 'SOUTH': 2, 'WEST': 3}
-    lane_idx = lane_map.get(lane, 0)
+    if lane not in LANES:
+        return jsonify({'ok': False, 'error': f'Invalid lane: {lane}'}), 400
     
-    # Set the signal state
-    # For now, simple logic: green for the specified lane
-    gpio.set('lane_green', True)
-    gpio.set('lane_yellow', False)
-    gpio.set('lane_red', False)
+    # Set all lanes to red first
+    for name in LANE_ORDER:
+        l = LANES[name]
+        gpio_set(l['G'], False)
+        gpio_set(l['Y'], False)
+        gpio_set(l['B'], False)
+        gpio_set(l['R'], True)
+    
+    # Set the requested lane to green
+    target = LANES[lane]
+    gpio_set(target['R'], False)
+    gpio_set(target['G'], True)
+    if emergency:
+        gpio_set(target['B'], True)
+        for name in LANE_ORDER:
+            if name != lane:
+                gpio_set(LANES[name]['B'], True)
     
     return jsonify({
         'ok': True,
         'lane': lane,
-        'lane_idx': lane_idx,
         'emergency': emergency
     })
 

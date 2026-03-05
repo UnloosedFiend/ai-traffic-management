@@ -20,6 +20,7 @@ import time
 import sys
 import threading
 import numpy as np
+import webbrowser
 from pathlib import Path
 from flask import Flask, render_template, Response, request, jsonify
 from flask_cors import CORS
@@ -31,6 +32,12 @@ import urllib.request
 # Add project root to path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
+
+# Import the proper TrafficController from traffic_logic
+from src.logic.traffic_logic import (
+    TrafficController as LogicController, 
+    TrafficMode
+)
 
 app = Flask(__name__, template_folder=str(project_root / "src" / "web" / "templates"))
 CORS(app)
@@ -72,11 +79,14 @@ class SystemState:
     current_green_lane: int = -1
     emergency_active: bool = False
     green_start_time: float = 0
+    mode: str = "AUTO"  # Current mode: AUTO, EMERGENCY, MANUAL, FAILURE
+    blue_light_blinking: bool = False
 
 state = SystemState()
 model = None
 camera_threads: Dict[int, 'CameraProcessor'] = {}
 pi_client = None
+logic_controller: Optional[LogicController] = None  # The proper traffic logic controller
 
 # ============================================================================
 # CAMERA PROCESSOR - Efficient threaded capture + inference
@@ -212,10 +222,10 @@ class CameraProcessor(threading.Thread):
             
             if cls_id == 0:  # ambulance
                 stats.ambulance_count += 1
-                stats.emergency = True
+                stats.emergency = True  # Only ambulance triggers emergency
             elif cls_id == 1:  # police
                 stats.police_count += 1
-                stats.emergency = True
+                # Police does NOT trigger emergency override
             elif cls_id == 2:  # vehicle
                 stats.vehicle_count += 1
             
@@ -278,28 +288,37 @@ class CameraProcessor(threading.Thread):
 # TRAFFIC CONTROL THREAD
 # ============================================================================
 
-class TrafficController(threading.Thread):
-    """Background thread for traffic signal control logic"""
+class TrafficControlThread(threading.Thread):
+    """
+    Background thread for traffic signal control logic.
+    
+    Uses the proper TrafficController from src.logic.traffic_logic
+    which implements the full specification:
+    - Adaptive density-based control
+    - Round robin fallback 
+    - Starvation prevention
+    - Emergency override with blue light blinking
+    - Manual override
+    - Gap-out logic
+    - Min/Max green enforcement
+    - Yellow transition
+    """
     
     def __init__(self):
         super().__init__(daemon=True)
         self.running = True
-        
-        # Timing settings
-        self.min_green_time = 5
-        self.normal_green_time = 15
         self.signal_update_interval = 1.0
-        
-        # Round-robin tracking for equal vehicle counts
-        self.last_round_robin_lane = -1
+        self.current_phase_start = 0
+        self.current_green_duration = 0
+        self.blue_blink_thread = None
         
     def run(self):
-        global state, pi_client, camera_threads
+        global state, pi_client, camera_threads, logic_controller
         
-        last_signal_update = 0
+        last_decision_time = 0
         
         while self.running:
-            if not state.running:
+            if not state.running or logic_controller is None:
                 time.sleep(0.1)
                 continue
             
@@ -307,146 +326,188 @@ class TrafficController(threading.Thread):
             
             # Update lane stats from camera threads
             for lane_id, cam in camera_threads.items():
-                state.lane_stats[lane_id] = cam.stats
+                stats = cam.stats
+                state.lane_stats[lane_id] = stats
+                
+                # Update the logic controller with detection results
+                logic_controller.update_lane(
+                    lane_id,
+                    vehicle_count=stats.vehicle_count,
+                    ambulance_count=stats.ambulance_count,
+                    police_count=stats.police_count,
+                    camera_ok=stats.connected,
+                    detection_ok=stats.connected
+                )
             
-            # Signal control logic
-            if current_time - last_signal_update > self.signal_update_interval:
-                self._update_signals(current_time)
-                last_signal_update = current_time
+            # Check for emergency preemption FIRST (interrupts any phase)
+            emergency_detected = False
+            emergency_lane_id = None
+            for lane_id, cam in camera_threads.items():
+                if cam.stats.ambulance_count > 0:
+                    emergency_detected = True
+                    emergency_lane_id = lane_id
+                    break
+            
+            # If ambulance detected and we're NOT already in emergency for that lane
+            if emergency_detected and emergency_lane_id is not None:
+                if not state.emergency_active or state.current_green_lane != emergency_lane_id:
+                    # Force immediate emergency override
+                    lane_id, duration, mode = logic_controller.decide()
+                    if mode == TrafficMode.EMERGENCY:
+                        self._handle_emergency(lane_id, duration)
+                        state.mode = "EMERGENCY"
+                    else:
+                        self._handle_emergency(emergency_lane_id, 30)
+                        state.mode = "EMERGENCY"
+                    time.sleep(0.1)
+                    continue
+            
+            # If we're in emergency but ambulance is GONE → end emergency immediately
+            if state.emergency_active and not emergency_detected:
+                print("[CONTROL] Ambulance gone — ending emergency, returning to normal")
+                lane_id, duration, mode = logic_controller.decide()
+                if lane_id >= 0:
+                    self._handle_normal(lane_id, duration, mode)
+                else:
+                    self._handle_all_red()
+                state.mode = mode.value.upper()
+                time.sleep(0.1)
+                continue
+            
+            # Check if current phase has expired
+            time_since_phase = current_time - self.current_phase_start
+            
+            if time_since_phase >= self.current_green_duration or state.current_green_lane < 0:
+                # Make new decision
+                lane_id, duration, mode = logic_controller.decide()
+                
+                # Handle mode/phase
+                if mode == TrafficMode.EMERGENCY:
+                    self._handle_emergency(lane_id, duration)
+                elif mode == TrafficMode.MANUAL:
+                    self._handle_manual(lane_id, duration)
+                elif lane_id >= 0:
+                    self._handle_normal(lane_id, duration, mode)
+                else:
+                    # All lanes inactive - keep all red
+                    self._handle_all_red()
+                
+                state.mode = mode.value.upper()
             
             time.sleep(0.1)
     
-    def _update_signals(self, current_time):
+    def _handle_normal(self, lane_id, duration, mode):
+        """Handle normal AUTO/FAILSAFE signal phase"""
         global state, pi_client
         
-        # Find priority lane
-        priority_lane, is_emergency = self._get_priority_lane()
+        # Stop any blue light blinking
+        self._stop_blue_blink()
         
-        time_since_green = current_time - state.green_start_time
+        state.current_green_lane = lane_id
+        state.green_start_time = time.time()
+        state.emergency_active = False
+        self.current_phase_start = time.time()
+        self.current_green_duration = duration
         
-        # Handle no vehicles case - all red
-        if priority_lane < 0:
-            if state.current_green_lane >= 0:
-                # Switch to all red
-                state.current_green_lane = -1
-                state.emergency_active = False
-                if pi_client:
-                    try:
-                        pi_client.send_all_red()
-                    except:
-                        pass
-            return
-        
-        # Check if we need to switch
-        should_switch = False
-        
-        if is_emergency and priority_lane != state.current_green_lane:
-            should_switch = True
-        elif state.emergency_active and not is_emergency:
-            should_switch = True
-        elif priority_lane != state.current_green_lane:
-            if time_since_green >= self.min_green_time or state.current_green_lane < 0:
-                should_switch = True
-        elif time_since_green >= self.normal_green_time:
-            should_switch = True
-        
-        if should_switch:
-            state.current_green_lane = priority_lane
-            state.green_start_time = current_time
-            state.emergency_active = is_emergency
-            
-            # Update round-robin tracker
-            if not is_emergency:
-                self.last_round_robin_lane = priority_lane
-            
-            # Send to Pi
-            if pi_client:
-                try:
-                    pi_client.send(lane=priority_lane, duration=30, emergency=is_emergency)
-                except:
-                    pass
+        # Send to Pi
+        if pi_client and lane_id >= 0:
+            try:
+                pi_client.send(lane=lane_id, duration=duration, emergency=False)
+            except Exception as e:
+                print(f"[PI] Error: {e}")
     
-    def _get_priority_lane(self):
+    def _handle_emergency(self, lane_id, duration):
         """
-        Determine which lane should be green based on priority:
-        1. Ambulance (highest priority emergency)
-        2. Police (lower priority emergency)
-        3. Most vehicles (normal traffic)
-        4. Round-robin for equal vehicle counts
-        5. All red if no vehicles detected
+        Handle emergency phase with blue light blinking.
+        
+        Per specification:
+        - Blue light shall BLINK (1 sec ON, 1 sec OFF)
+        - All other lanes remain RED
+        - Blue light turns OFF before returning to AUTO
         """
-        connected_lanes = [
-            (lane_id, stats) for lane_id, stats in state.lane_stats.items() 
-            if stats.connected
-        ]
+        global state, pi_client
         
-        if not connected_lanes:
-            return -1, False  # No connected cameras
+        state.current_green_lane = lane_id
+        state.green_start_time = time.time()
+        state.emergency_active = True
+        state.blue_light_blinking = True
+        self.current_phase_start = time.time()
+        self.current_green_duration = duration
         
-        # Priority 1: Check for ambulances first (highest emergency priority)
-        ambulance_lanes = [
-            (lane_id, stats.ambulance_count) 
-            for lane_id, stats in connected_lanes 
-            if stats.ambulance_count > 0
-        ]
-        if ambulance_lanes:
-            # Return lane with most ambulances
-            ambulance_lanes.sort(key=lambda x: x[1], reverse=True)
-            return ambulance_lanes[0][0], True
+        # Start blue light blinking in separate thread
+        self._start_blue_blink(lane_id)
         
-        # Priority 2: Check for police (lower emergency priority)
-        police_lanes = [
-            (lane_id, stats.police_count) 
-            for lane_id, stats in connected_lanes 
-            if stats.police_count > 0
-        ]
-        if police_lanes:
-            # Return lane with most police vehicles
-            police_lanes.sort(key=lambda x: x[1], reverse=True)
-            return police_lanes[0][0], True
+        # Send emergency signal to Pi
+        if pi_client and lane_id >= 0:
+            try:
+                pi_client.send(lane=lane_id, duration=duration, emergency=True)
+            except Exception as e:
+                print(f"[PI] Error: {e}")
+    
+    def _handle_manual(self, lane_id, duration):
+        """Handle manual mode"""
+        global state, pi_client, logic_controller
         
-        # Priority 3: Normal traffic - count vehicles per lane
-        vehicle_counts = [
-            (lane_id, stats.vehicle_count) 
-            for lane_id, stats in connected_lanes
-        ]
-        
-        # Check if ALL lanes have zero vehicles
-        total_vehicles = sum(count for _, count in vehicle_counts)
-        if total_vehicles == 0:
-            return -1, False  # All red - no vehicles
-        
-        # Find maximum vehicle count
-        max_count = max(count for _, count in vehicle_counts)
-        
-        # Get all lanes with maximum count (for round-robin)
-        max_lanes = [lane_id for lane_id, count in vehicle_counts if count == max_count]
-        
-        if len(max_lanes) == 1:
-            # Single lane with most vehicles
-            return max_lanes[0], False
+        if logic_controller.manual_setting == "ALL_YELLOW_BLINK":
+            # Yellow blink mode - handled by Pi
+            self._stop_blue_blink()
+            state.current_green_lane = -1
+            state.emergency_active = False
+            # TODO: Send yellow blink command to Pi
+        elif logic_controller.manual_setting == "FORCE_LANE":
+            self._handle_normal(lane_id, duration, TrafficMode.MANUAL)
         else:
-            # Multiple lanes with equal count - use round-robin
-            # Find next lane in sequence after last_round_robin_lane
-            max_lanes.sort()  # Ensure consistent ordering
-            
-            # Find next lane in round-robin sequence
-            next_lane = max_lanes[0]  # Default to first
-            for lane_id in max_lanes:
-                if lane_id > self.last_round_robin_lane:
-                    next_lane = lane_id
+            # NORMAL - switch back to auto (handled by controller.decide())
+            pass
+        
+        self.current_phase_start = time.time()
+        self.current_green_duration = duration if duration > 0 else 5
+    
+    def _handle_all_red(self):
+        """Keep all lanes red when no vehicles"""
+        global state, pi_client
+        
+        self._stop_blue_blink()
+        
+        state.current_green_lane = -1
+        state.emergency_active = False
+        self.current_phase_start = time.time()
+        self.current_green_duration = 2  # Re-check after 2 seconds
+        
+        if pi_client:
+            try:
+                pi_client.send_all_red()
+            except:
+                pass
+    
+    def _start_blue_blink(self, lane_id):
+        """Start blue light blinking in background"""
+        if self.blue_blink_thread and self.blue_blink_thread.is_alive():
+            return  # Already blinking
+        
+        def blink_loop():
+            global pi_client
+            while state.blue_light_blinking and state.emergency_active:
+                # This is visual indicator only - actual GPIO handled by Pi
+                time.sleep(1.0)  # ON duration
+                if not state.blue_light_blinking:
                     break
-            else:
-                # Wrap around to first lane
-                next_lane = max_lanes[0]
-            
-            return next_lane, False
+                time.sleep(1.0)  # OFF duration
+        
+        self.blue_blink_thread = threading.Thread(target=blink_loop, daemon=True)
+        self.blue_blink_thread.start()
+    
+    def _stop_blue_blink(self):
+        """Stop blue light blinking"""
+        state.blue_light_blinking = False
+        state.emergency_active = False
     
     def stop(self):
+        self._stop_blue_blink()
         self.running = False
 
 
-traffic_controller = None
+traffic_controller: Optional[TrafficControlThread] = None
 
 # ============================================================================
 # FLASK ROUTES
@@ -454,14 +515,20 @@ traffic_controller = None
 
 @app.route('/')
 def index():
-    """Serve the main launcher page"""
+    """Serve the landing page"""
     return render_template('launcher.html')
+
+
+@app.route('/dashboard')
+def dashboard():
+    """Serve the main dashboard (camera feed + signal lights)"""
+    return render_template('dashboard_main.html')
 
 
 @app.route('/api/start', methods=['POST'])
 def start_system():
     """Start the traffic management system"""
-    global state, model, camera_threads, pi_client, traffic_controller
+    global state, model, camera_threads, pi_client, traffic_controller, logic_controller
     
     data = request.json
     
@@ -513,15 +580,24 @@ def start_system():
         camera_threads[lane_id] = cam
         print(f"[INFO] Started camera processor for Lane {lane_id}")
     
-    # Start traffic controller
+    # Initialize the proper traffic logic controller
+    logic_controller = LogicController(
+        num_lanes=4,
+        min_green=5,
+        max_green=30,
+    )
+    print("[INFO] Traffic logic controller initialized")
+    
+    # Start traffic controller thread
     if traffic_controller:
         traffic_controller.stop()
-    traffic_controller = TrafficController()
+    traffic_controller = TrafficControlThread()
     traffic_controller.start()
     
     state.running = True
     state.current_green_lane = -1
     state.green_start_time = time.time()
+    state.mode = "AUTO"
     
     return jsonify({
         'status': 'ok',
@@ -551,18 +627,32 @@ def stop_system():
 @app.route('/api/status')
 def get_status():
     """Get current system status"""
-    global state
+    global state, logic_controller
     
     remaining = 0
+    green_duration = 15  # default
+    if logic_controller and logic_controller.current_duration > 0:
+        green_duration = logic_controller.current_duration
     if state.current_green_lane >= 0:
-        remaining = max(0, 15 - int(time.time() - state.green_start_time))
+        remaining = max(0, green_duration - int(time.time() - state.green_start_time))
+    
+    # Get timing info from logic controller
+    timing_info = {}
+    if logic_controller:
+        try:
+            timing_info = logic_controller.get_timing_info()
+        except Exception:
+            timing_info = {}
     
     return jsonify({
         'running': state.running,
         'pi_connected': state.pi_connected,
         'current_green_lane': state.current_green_lane,
         'emergency_active': state.emergency_active,
+        'blue_light_blinking': state.blue_light_blinking,
+        'mode': state.mode,
         'remaining_time': remaining,
+        'timing': timing_info,
         'lanes': {
             str(i): {
                 'connected': s.connected,
@@ -594,12 +684,16 @@ def video_feed(lane_id):
 
 @app.route('/api/signal/<int:lane_id>', methods=['POST'])
 def manual_signal(lane_id):
-    """Manually set a lane to green"""
-    global state, pi_client
+    """Manually set a lane to green (sets MANUAL mode with FORCE_LANE)"""
+    global state, pi_client, logic_controller
+    
+    if logic_controller:
+        logic_controller.set_manual_setting("FORCE_LANE", forced_lane=lane_id)
     
     state.current_green_lane = lane_id
     state.green_start_time = time.time()
     state.emergency_active = False
+    state.mode = "MANUAL"
     
     if pi_client:
         try:
@@ -607,20 +701,88 @@ def manual_signal(lane_id):
         except:
             pass
     
-    return jsonify({'status': 'ok', 'lane': lane_id})
+    return jsonify({'status': 'ok', 'lane': lane_id, 'mode': 'MANUAL'})
+
+
+@app.route('/api/mode', methods=['POST'])
+def set_mode():
+    """
+    Set operating mode.
+    
+    POST JSON:
+    {
+        "mode": "AUTO" | "MANUAL" | "FAILURE",
+        "setting": "FORCE_LANE" | "ALL_YELLOW_BLINK" | "NORMAL",  (for MANUAL mode)
+        "lane": 0-3  (for FORCE_LANE)
+    }
+    """
+    global state, logic_controller
+    
+    data = request.json
+    mode = data.get('mode', 'AUTO').upper()
+    setting = data.get('setting', 'NORMAL')
+    forced_lane = data.get('lane', 0)
+    
+    if logic_controller is None:
+        return jsonify({'status': 'error', 'message': 'System not started'}), 400
+    
+    if mode == 'AUTO':
+        logic_controller.set_mode(TrafficMode.NORMAL)
+        logic_controller.set_manual_setting("NORMAL")
+        state.mode = "AUTO"
+    elif mode == 'MANUAL':
+        logic_controller.set_manual_setting(setting, forced_lane=forced_lane)
+        state.mode = "MANUAL"
+    elif mode == 'FAILURE':
+        logic_controller.set_mode(TrafficMode.FAILURE)
+        state.mode = "FAILURE"
+    else:
+        return jsonify({'status': 'error', 'message': f'Invalid mode: {mode}'}), 400
+    
+    return jsonify({
+        'status': 'ok', 
+        'mode': mode,
+        'setting': setting if mode == 'MANUAL' else None
+    })
+
+
+@app.route('/api/timing', methods=['GET'])
+def get_timing():
+    """Get timing configuration"""
+    global logic_controller
+    
+    if logic_controller:
+        return jsonify(logic_controller.get_timing_info())
+    return jsonify({})
 
 
 # ============================================================================
 # MAIN
 # ============================================================================
 
+def open_browser():
+    """Open browser after a short delay to allow server to start"""
+    time.sleep(1.5)
+    webbrowser.open('http://localhost:5000')
+
 if __name__ == '__main__':
     print("=" * 60)
     print("  AI TRAFFIC MANAGEMENT - WEB LAUNCHER")
     print("=" * 60)
     print()
-    print("  Open in browser: http://localhost:5000")
+    print("  Features:")
+    print("  - Adaptive density-based control")
+    print("  - Emergency vehicle priority with blue light blinking")
+    print("  - Starvation prevention")
+    print("  - Gap-out logic")
+    print("  - Min/Max green enforcement")
+    print()
+    print("  Opening browser: http://localhost:5000")
     print()
     print("=" * 60)
+    
+    # Start browser opener thread
+    browser_thread = threading.Thread(target=open_browser, daemon=True)
+    browser_thread.start()
     
     app.run(host='0.0.0.0', port=5000, threaded=True, debug=False)
